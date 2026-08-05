@@ -1,0 +1,14 @@
+.vscode/**
+src/**
+**/*.ts
+tsconfig.json
+.gitignore
+docs/**
+node_modules/**
+mcp/test/**
+mcp/package-lock.json
+package-lock.json
+**/*.map
+.claude/**
+scratchpad/**
+**/.DS_Store
