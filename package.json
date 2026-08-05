@@ -1,0 +1,99 @@
+{
+  "name": "m365-mcp-plugin",
+  "displayName": "Microsoft 365 MCP (Outlook + Teams)",
+  "description": "Da a tu agente de Copilot acceso a tu correo, agenda y chats de Teams via Microsoft Graph, reutilizando la sesion de Microsoft de VS Code. Expone todo como servidor MCP para el chat de IA.",
+  "version": "0.1.0",
+  "publisher": "lrbg",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other",
+    "AI"
+  ],
+  "keywords": [
+    "outlook",
+    "teams",
+    "microsoft 365",
+    "graph",
+    "mcp",
+    "copilot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lrbg/MCP_Outlook.git"
+  },
+  "license": "MIT",
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "m365.mcpServers",
+        "label": "Microsoft 365"
+      }
+    ],
+    "configuration": {
+      "title": "Microsoft 365 MCP",
+      "properties": {
+        "m365.clientId": {
+          "type": "string",
+          "default": "",
+          "description": "(Opcional) Application (client) ID de una app registrada en Entra ID. Usalo solo si el administrador de tu organizacion no concede los permisos de Graph a la app por defecto de VS Code. Se inyecta como VSCODE_CLIENT_ID en la peticion de sesion. Nunca se guarda en el repo."
+        },
+        "m365.tenantId": {
+          "type": "string",
+          "default": "",
+          "description": "(Opcional) Directory (tenant) ID de tu organizacion. Usalo junto con m365.clientId si necesitas apuntar a un tenant especifico. Se inyecta como VSCODE_TENANT."
+        },
+        "m365.mcpScope": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "user",
+            "workspace"
+          ],
+          "enumDescriptions": [
+            "Preguntar cada vez que haya una carpeta abierta",
+            "Registrar el MCP para todo VS Code (recomendado)",
+            "Registrar el MCP solo en la carpeta abierta (.vscode/mcp.json)"
+          ],
+          "default": "ask",
+          "description": "Donde se registra el servidor MCP para Copilot Chat. Con 'user' funciona en cualquier ventana, aunque no haya carpeta abierta."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "m365.signIn",
+        "title": "M365: Iniciar sesion (Microsoft)"
+      },
+      {
+        "command": "m365.refresh",
+        "title": "M365: Refrescar sesion"
+      },
+      {
+        "command": "m365.status",
+        "title": "M365: Estado y permisos concedidos"
+      },
+      {
+        "command": "m365.registerMcpServer",
+        "title": "M365: Registrar servidor MCP (Copilot Chat)"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package",
+    "test": "node --test mcp/test/"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.5.0"
+  }
+}
