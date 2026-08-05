@@ -3,7 +3,7 @@ import {
   McpServerEntry, McpFileCorruptError,
   userMcpPathFromGlobalStorage, mergeMcpServers, hasMcpServer,
 } from './mcpConfig'
-import { buildM365Runtime, registerM365McpProvider, M365McpProvider } from './mcpProvider'
+import { buildM365Runtime, registerM365McpProvider, M365McpProvider, POLIBIO_TOKEN_KEY } from './mcpProvider'
 import { signIn, refreshSilent } from './auth'
 
 let mcpProvider: M365McpProvider | undefined
@@ -51,6 +51,26 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.showInformationMessage(
       `Microsoft 365 conectado. Permisos concedidos: ${rt.scopes.join(', ') || '(ninguno)'}.`,
     )
+  })
+
+  reg('m365.setPolibioToken', async () => {
+    const token = await vscode.window.showInputBox({
+      title: 'M365: Token de lectura de Polibio (minutas)',
+      prompt: 'Pega el token de la edge function minutas-read de PolibioDesk. Se guarda cifrado en SecretStorage.',
+      password: true,
+      ignoreFocusOut: true,
+    })
+    if (token === undefined) { return }
+    if (token.trim()) {
+      await context.secrets.store(POLIBIO_TOKEN_KEY, token.trim())
+      vscode.window.showInformationMessage('Token de Polibio guardado. Refresca el MCP para activarlo.')
+    } else {
+      await context.secrets.delete(POLIBIO_TOKEN_KEY)
+      vscode.window.showInformationMessage('Token de Polibio borrado (conector desactivado).')
+    }
+    await buildM365Runtime(context)
+    mcpProvider?.refresh()
+    await vscode.commands.executeCommand('m365.registerMcpServer', { silent: true })
   })
 
   reg('m365.registerMcpServer', async (opts?: { silent?: boolean }) => {

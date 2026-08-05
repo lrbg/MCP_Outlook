@@ -19,9 +19,10 @@ export function loadConfig() {
       account: cfg.account || '',
       expiresOn: cfg.expiresOn || 0,
       graphBase: cfg.graphBase || 'https://graph.microsoft.com/v1.0',
+      polibio: cfg.polibio || null,
     }
   } catch {
-    return { accessToken: '', scopes: [], account: '', expiresOn: 0, graphBase: 'https://graph.microsoft.com/v1.0' }
+    return { accessToken: '', scopes: [], account: '', expiresOn: 0, graphBase: 'https://graph.microsoft.com/v1.0', polibio: null }
   }
 }
 

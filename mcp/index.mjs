@@ -16,6 +16,7 @@ import { registerCalendarTools } from './calendar.mjs'
 import { registerTeamsTools } from './teams.mjs'
 import { registerSkillTools } from './skills.mjs'
 import { registerDiagnosticsTools } from './diagnostics.mjs'
+import { registerPolibioTools } from './polibio.mjs'
 
 let version = '0.0.0'
 try { version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || version } catch { /* fallback */ }
@@ -29,6 +30,7 @@ registerMailTools(server, caps)
 registerCalendarTools(server, caps)
 registerTeamsTools(server, caps)
 registerSkillTools(server, caps)
+registerPolibioTools(server, cfg.polibio, caps)
 
 const transport = new StdioServerTransport()
 await server.connect(transport)

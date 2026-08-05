@@ -62,6 +62,16 @@
           ],
           "default": "ask",
           "description": "Donde se registra el servidor MCP para Copilot Chat. Con 'user' funciona en cualquier ventana, aunque no haya carpeta abierta."
+        },
+        "m365.polibio.supabaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "(Opcional) URL de Supabase de PolibioDesk (ej. https://TU-REF.supabase.co) para el conector de minutas (Anotador de Reuniones). Se combina con /functions/v1/minutas-read. Vacio = conector desactivado."
+        },
+        "m365.polibio.anonKey": {
+          "type": "string",
+          "default": "",
+          "description": "(Opcional) anon key de Supabase de PolibioDesk, requerido como header apikey del gateway de edge functions. El token de lectura se guarda aparte con 'M365: Guardar token de Polibio (minutas)'."
         }
       }
     },
@@ -81,6 +91,10 @@
       {
         "command": "m365.registerMcpServer",
         "title": "M365: Registrar servidor MCP (Copilot Chat)"
+      },
+      {
+        "command": "m365.setPolibioToken",
+        "title": "M365: Guardar token de Polibio (minutas)"
       }
     ]
   },

@@ -62,6 +62,31 @@ valores viven en tu configuración local, nunca en el repo.
 `teams_pending`
 **Diagnóstico:** `m365_status`
 
+### Conector con PolibioDesk (Anotador de Reuniones)
+
+Opcional. Conecta el agente con el módulo de **minutas** de PolibioDesk (proyecto
+RAG "Minutas de Reuniones") para que pueda leer tus minutas y transcripciones,
+cruzarlas con correo/agenda/Teams y, en planeación, **listar tus pendientes**
+(la extracción la hace el agente sobre el texto; distingue *tus* acuerdos de los
+de otros con tu identidad `/me`).
+
+Tools: `polibio_minutas_list`, `polibio_minuta_get`, `meeting_context` (minuta +
+correos + agenda del día), `my_action_items` (reúne minutas + tu identidad para
+que el agente liste tus pendientes).
+
+Requiere una edge function de lectura en PolibioDesk (`minutas-read`,
+`verify_jwt=false`, autenticada por token propio — mismo patrón que
+`ingest-minuta`). Para activarlo en VS Code:
+
+1. Ajustes: `m365.polibio.supabaseUrl` (ej. `https://TU-REF.supabase.co`) y
+   `m365.polibio.anonKey`.
+2. Comando `M365: Guardar token de Polibio (minutas)` — guarda el token de
+   lectura (cifrado en SecretStorage).
+
+El token y las URLs viven solo en tu configuración local, nunca en el repo. Si
+falta algo, el conector queda desactivado y `polibio_status` explica cómo
+activarlo.
+
 ## Seguridad
 
 - **Confirmación en dos pasos** para todo lo que sale al exterior (enviar o

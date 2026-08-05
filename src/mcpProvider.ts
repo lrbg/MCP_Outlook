@@ -2,6 +2,9 @@ import * as vscode from 'vscode'
 import * as path from 'path'
 import { refreshSilent, M365Session } from './auth'
 
+/** Clave de SecretStorage para el token de lectura de minutas de Polibio. */
+export const POLIBIO_TOKEN_KEY = 'm365.polibio.token'
+
 export interface M365Runtime {
   /** Ruta absoluta al entrypoint del servidor MCP (mcp/index.mjs). */
   serverPath: string
@@ -30,12 +33,24 @@ export async function buildM365Runtime(context: vscode.ExtensionContext): Promis
   let session: M365Session | undefined
   try { session = await refreshSilent(context) } catch { /* sin sesion todavia */ }
 
+  // Conector opcional con el Anotador de PolibioDesk (minutas). URL + anon key
+  // salen de settings; el token de lectura de SecretStorage. Nada de esto vive
+  // en el repo. Si falta algo, el conector queda desactivado.
+  const polCfg = vscode.workspace.getConfiguration('m365')
+  const polUrl = (polCfg.get<string>('polibio.supabaseUrl', '') || '').trim().replace(/\/+$/, '')
+  const polAnon = (polCfg.get<string>('polibio.anonKey', '') || '').trim()
+  const polToken = (await context.secrets.get(POLIBIO_TOKEN_KEY)) || ''
+  const polibio = (polUrl && polAnon && polToken)
+    ? { functionUrl: `${polUrl}/functions/v1/minutas-read`, anonKey: polAnon, token: polToken }
+    : null
+
   const cfg = {
     accessToken: session?.accessToken || '',
     scopes: session?.scopes || [],
     account: session?.account || '',
     expiresOn: session?.expiresOn || 0,
     graphBase: 'https://graph.microsoft.com/v1.0',
+    polibio,
   }
   const cfgFileUri = vscode.Uri.joinPath(context.globalStorageUri, 'm365-config.json')
   await vscode.workspace.fs.writeFile(cfgFileUri, Buffer.from(JSON.stringify(cfg, null, 2), 'utf8'))
