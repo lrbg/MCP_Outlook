@@ -41,7 +41,7 @@ foreach ($item in $filtered) {
     }
   } catch {}
 }
-if ($result.Count -eq 0) { Write-Output "[]" } else { $result | ConvertTo-Json -Depth 2 }
+if ($result.Count -eq 0) { Write-Output "[]" } else { ($result | ConvertTo-Json -Depth 2) -replace '[\x00-\x1F]', ' ' }
 `
   const out = ps(script)
   if (!out || !out.trim()) { return [] }

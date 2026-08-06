@@ -52,11 +52,12 @@ export function readEmailBody(entryId: string): EmailBody {
 $ol = New-Object -ComObject Outlook.Application
 $ns = $ol.GetNamespace("MAPI")
 $item = $ns.GetItemFromID($env:ENTRY_ID)
-[PSCustomObject]@{
+$obj = [PSCustomObject]@{
   subject = $item.Subject; sender = $item.SenderName; senderEmail = $item.SenderEmailAddress
   to = $item.To; cc = $item.CC; received = $item.ReceivedTime.ToString("yyyy-MM-dd HH:mm")
   body = $item.Body.Substring(0, [Math]::Min($item.Body.Length, 8000))
-} | ConvertTo-Json -Depth 2
+}
+($obj | ConvertTo-Json -Depth 2) -replace '[\x00-\x1F]', ' '
 `
   return JSON.parse(ps(script, { ENTRY_ID: entryId }))
 }
