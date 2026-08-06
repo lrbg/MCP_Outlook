@@ -5,7 +5,7 @@
  */
 import { execSync } from 'node:child_process'
 import { RawEmail } from './bitacoraCore'
-import { parsePsArray } from './psJson'
+import { parsePsArray, dec, PS_B64_FN } from './psJson'
 
 export const isWindows = process.platform === 'win32'
 
@@ -36,6 +36,7 @@ export function getPriorityEmails(senders: string[], days = 14, max = 20): Prior
   if (list.length === 0) { return [] }
 
   const script = `
+${PS_B64_FN}
 $set = @{}
 foreach ($e in ($env:PRIORITY_SENDERS -split ',')) { $t = $e.Trim().ToLower(); if ($t) { $set[$t] = $true } }
 $ol = New-Object -ComObject Outlook.Application
@@ -57,22 +58,27 @@ foreach ($item in $recent) {
     }
     $key = ([string]$smtp).ToLower()
     if ($set.ContainsKey($key)) {
+      $body = $item.Body; if ($body.Length -gt 1500) { $body = $body.Substring(0, 1500) }
       $result += [PSCustomObject]@{
         id = $item.EntryID
-        subject = $item.Subject
-        sender = $item.SenderName
         senderEmail = $smtp
         received = $item.ReceivedTime.ToString("yyyy-MM-dd HH:mm")
         unread = $item.UnRead
-        to = $item.To
-        cc = $item.CC
-        bodySnippet = $item.Body.Substring(0, [Math]::Min($item.Body.Length, 1500))
+        s = B64($item.Subject)
+        n = B64($item.SenderName)
+        t = B64($item.To)
+        c = B64($item.CC)
+        b = B64($body)
       }
       if ($result.Count -ge ${max}) { break }
     }
   } catch {}
 }
-if ($result.Count -eq 0) { Write-Output "[]" } else { ($result | ConvertTo-Json -Depth 2) -replace '[\x00-\x1F]', ' ' }
+if ($result.Count -eq 0) { Write-Output "[]" } else { $result | ConvertTo-Json -Depth 2 }
 `
-  return parsePsArray(ps(script, { PRIORITY_SENDERS: list.join(',') })) as PriorityEmail[]
+  const raw = parsePsArray(ps(script, { PRIORITY_SENDERS: list.join(',') }))
+  return raw.map(r => ({
+    id: r.id, senderEmail: r.senderEmail, received: r.received, unread: r.unread,
+    subject: dec(r.s), sender: dec(r.n), to: dec(r.t), cc: dec(r.c), bodySnippet: dec(r.b),
+  })) as PriorityEmail[]
 }

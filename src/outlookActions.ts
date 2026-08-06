@@ -3,7 +3,7 @@
  * cuerpo completo y responder. Datos por variables de entorno (sin inyeccion).
  */
 import { execSync } from 'node:child_process'
-import { cleanPsJson } from './psJson'
+import { cleanPsJson, dec, PS_B64_FN } from './psJson'
 
 export const isWindows = process.platform === 'win32'
 
@@ -21,17 +21,18 @@ export function getMe(): { name: string; email: string } {
   if (cachedMe) { return cachedMe }
   if (!isWindows) { return { name: '', email: '' } }
   const script = `
+${PS_B64_FN}
 $ol = New-Object -ComObject Outlook.Application
 $ns = $ol.GetNamespace("MAPI")
 $u = $ns.CurrentUser
 $email = ""
 try { $email = $u.AddressEntry.GetExchangeUser().PrimarySmtpAddress } catch {}
 if (-not $email) { try { $email = $u.Address } catch {} }
-[PSCustomObject]@{ name = $u.Name; email = $email } | ConvertTo-Json
+[PSCustomObject]@{ n = B64($u.Name); e = B64($email) } | ConvertTo-Json
 `
   try {
     const j = JSON.parse(cleanPsJson(ps(script)))
-    cachedMe = { name: j.name || '', email: (j.email || '').toLowerCase() }
+    cachedMe = { name: dec(j.n), email: dec(j.e).toLowerCase() }
   } catch { cachedMe = { name: '', email: '' } }
   return cachedMe
 }
@@ -50,17 +51,19 @@ export interface EmailBody {
 export function readEmailBody(entryId: string): EmailBody {
   if (!isWindows) { throw new Error('Requiere Windows con Outlook de escritorio.') }
   const script = `
+${PS_B64_FN}
 $ol = New-Object -ComObject Outlook.Application
 $ns = $ol.GetNamespace("MAPI")
 $item = $ns.GetItemFromID($env:ENTRY_ID)
-$obj = [PSCustomObject]@{
-  subject = $item.Subject; sender = $item.SenderName; senderEmail = $item.SenderEmailAddress
-  to = $item.To; cc = $item.CC; received = $item.ReceivedTime.ToString("yyyy-MM-dd HH:mm")
-  body = $item.Body.Substring(0, [Math]::Min($item.Body.Length, 8000))
-}
-($obj | ConvertTo-Json -Depth 2) -replace '[\x00-\x1F]', ' '
+$body = $item.Body; if ($body.Length -gt 8000) { $body = $body.Substring(0, 8000) }
+[PSCustomObject]@{
+  s = B64($item.Subject); n = B64($item.SenderName); e = B64($item.SenderEmailAddress)
+  t = B64($item.To); c = B64($item.CC); received = $item.ReceivedTime.ToString("yyyy-MM-dd HH:mm")
+  b = B64($body)
+} | ConvertTo-Json -Depth 2
 `
-  return JSON.parse(cleanPsJson(ps(script, { ENTRY_ID: entryId })))
+  const r = JSON.parse(cleanPsJson(ps(script, { ENTRY_ID: entryId })))
+  return { subject: dec(r.s), sender: dec(r.n), senderEmail: dec(r.e), to: dec(r.t), cc: dec(r.c), received: r.received, body: dec(r.b) }
 }
 
 /** Responde el correo por EntryID con el texto dado. */

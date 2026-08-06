@@ -17,3 +17,15 @@ export function parsePsArray(out: string): any[] {
   const j = JSON.parse(cleanPsJson(out))
   return Array.isArray(j) ? j : [j]
 }
+
+/**
+ * Decodifica un texto que PowerShell mando en Base64 (UTF-8). Se usa para
+ * asuntos/cuerpos: al viajar en Base64 no rompen el JSON aunque tengan comillas,
+ * backslashes o cualquier caracter (bug de ConvertTo-Json en PowerShell 5.1).
+ */
+export function dec(b64: string | undefined): string {
+  try { return Buffer.from(b64 || '', 'base64').toString('utf8') } catch { return '' }
+}
+
+/** Fragmento PowerShell reutilizable: define function B64 que codifica a Base64 UTF-8. */
+export const PS_B64_FN = 'function B64($s){ if($null -eq $s){return ""}; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$s)) }'

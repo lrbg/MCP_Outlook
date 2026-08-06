@@ -5,7 +5,7 @@
  */
 import { execSync } from 'node:child_process'
 import { RawEmail } from './bitacoraCore'
-import { parsePsArray } from './psJson'
+import { parsePsArray, dec, PS_B64_FN } from './psJson'
 
 export const isWindows = process.platform === 'win32'
 
@@ -24,6 +24,7 @@ export function getUnread(max = 30): RawEmail[] {
   }
   const n = Math.min(Math.max(max, 1), 100)
   const script = `
+${PS_B64_FN}
 $ol = New-Object -ComObject Outlook.Application
 $ns = $ol.GetNamespace("MAPI")
 $folder = $ns.GetDefaultFolder(6)
@@ -35,17 +36,18 @@ $result = @()
 for ($i = 1; $i -le $total; $i++) {
   try {
     $item = $unread.Item($i)
+    $prev = $item.Body; if ($prev.Length -gt 300) { $prev = $prev.Substring(0, 300) }
     $result += [PSCustomObject]@{
-      subject = $item.Subject
-      sender = $item.SenderName
-      senderEmail = $item.SenderEmailAddress
       received = $item.ReceivedTime.ToString("yyyy-MM-dd HH:mm")
       unread = $true
-      preview = $item.Body.Substring(0, [Math]::Min($item.Body.Length, 300))
+      s = B64($item.Subject); n = B64($item.SenderName); e = B64($item.SenderEmailAddress); p = B64($prev)
     }
   } catch {}
 }
-if ($result.Count -eq 0) { Write-Output "[]" } else { ($result | ConvertTo-Json -Depth 2) -replace '[\x00-\x1F]', ' ' }
+if ($result.Count -eq 0) { Write-Output "[]" } else { $result | ConvertTo-Json -Depth 2 }
 `
-  return parsePsArray(ps(script))
+  return parsePsArray(ps(script)).map(r => ({
+    received: r.received, unread: r.unread,
+    subject: dec(r.s), sender: dec(r.n), senderEmail: dec(r.e), preview: dec(r.p),
+  })) as RawEmail[]
 }
