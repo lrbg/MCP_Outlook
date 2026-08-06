@@ -2,7 +2,7 @@
   "name": "m365-mcp-plugin",
   "displayName": "Outlook MCP (correo + agenda)",
   "description": "Da a tu agente de Copilot acceso a tu correo y agenda (Outlook de escritorio por COM, sin login), con un panel de control: revision diaria resumida por Copilot, correos prioritarios, recetas de sitios y manos de navegador (Playwright MCP). Windows-only.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "lrbg",
   "engines": {
     "vscode": "^1.96.0"
@@ -104,6 +104,13 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Correos (email) de las personas prioritarias/de interes. El panel muestra sus ultimos correos de las ultimas 2 semanas. Se administra desde el panel (icono del sobre > Panel)."
+        },
+        "m365.agenda.days": {
+          "type": "number",
+          "default": 7,
+          "minimum": 1,
+          "maximum": 60,
+          "description": "Cuantos dias hacia adelante muestra la Agenda en el panel."
         }
       }
     },

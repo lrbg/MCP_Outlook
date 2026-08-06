@@ -15,6 +15,23 @@ async function pickModel(): Promise<any> {
   return models[0]
 }
 
+/** Asistente de agenda: recomendaciones sobre las reuniones del rango. */
+export async function assistAgenda(meetings: any[], token: vscode.CancellationToken): Promise<string> {
+  const model = await pickModel()
+  const compact = meetings.map(m => ({ asunto: m.subject, inicio: m.start, fin: m.end, invitados: m.attendees, lugar: m.location }))
+  const prompt =
+    'Eres mi asistente de agenda. Abajo van mis reuniones (JSON). Responde en espanol, markdown breve:\n' +
+    '1. **Hoy/proximo**: que sigue y que preparar.\n' +
+    '2. **Alertas**: empalmes, dias saturados (muchas juntas seguidas), falta de buffer.\n' +
+    '3. **Sugerencias**: bloques de foco o mover algo, si aplica.\n' +
+    'No inventes reuniones que no esten. Se concreto y corto.\n\n' +
+    'Reuniones:\n```json\n' + JSON.stringify(compact, null, 2) + '\n```'
+  const resp = await model.sendRequest([vscode.LanguageModelChatMessage.User(prompt)], {}, token)
+  let text = ''
+  for await (const chunk of resp.text) { text += chunk }
+  return text.trim() || '_Sin recomendaciones._'
+}
+
 /** Redacta un borrador de respuesta al correo dado, para que el usuario lo edite. */
 export async function draftReply(email: EmailBody, token: vscode.CancellationToken, instruction = ''): Promise<string> {
   const model = await pickModel()

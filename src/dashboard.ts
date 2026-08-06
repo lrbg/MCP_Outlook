@@ -3,7 +3,9 @@ import { DayEntry, toMarkdown } from './bitacoraCore'
 import { loadEntries, runDailyReview } from './dailyReview'
 import { getPriorityEmails, isWindows } from './priorityInbox'
 import { readEmailBody, sendReply } from './outlookActions'
-import { draftReply } from './copilot'
+import { draftReply, assistAgenda } from './copilot'
+import { getMeetings } from './calendarRead'
+import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
 import { recipesDir } from './mcpProvider'
 
 let panel: vscode.WebviewPanel | undefined
@@ -68,6 +70,34 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
         panel.webview.postMessage({ type: 'priority', emails })
       } catch (e: any) {
         panel.webview.postMessage({ type: 'priority', error: e?.message || String(e) })
+      }
+      return
+    }
+    case 'loadAgenda': {
+      if (!panel) { return }
+      try {
+        const days = c.get<number>('agenda.days', 7)
+        const meetings = getMeetings(days)
+        const groups = groupByDay(meetings)
+        const conflicts = findConflicts(meetings).map(([a, b]) => [a.subject, b.subject])
+        const free = freeSlotsByDay(meetings)
+        panel.webview.postMessage({ type: 'agenda', groups, conflicts, free })
+      } catch (e: any) {
+        panel.webview.postMessage({ type: 'agenda', error: e?.message || String(e) })
+      }
+      return
+    }
+    case 'agendaAssist': {
+      if (!panel) { return }
+      try {
+        const meetings = getMeetings(c.get<number>('agenda.days', 7))
+        const notes = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'Copilot está revisando tu agenda…' },
+          (_p, token) => assistAgenda(meetings, token),
+        )
+        panel.webview.postMessage({ type: 'agendaNotes', notes })
+      } catch (e: any) {
+        panel.webview.postMessage({ type: 'agendaNotes', error: e?.message || String(e) })
       }
       return
     }
@@ -232,6 +262,10 @@ function render(s: State): string {
   #composer textarea { width: 100%; box-sizing: border-box; min-height: 160px; resize: vertical; font-family: var(--vscode-font-family);
     padding: 8px; border-radius: 5px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
   #composer .crow { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .agday { margin-bottom: 10px; }
+  .agdate { font-weight: 600; font-size: 12px; color: var(--vscode-descriptionForeground); text-transform: capitalize; margin: 8px 0 2px; }
+  #agendaNotes .composer { margin-top: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 12px; }
+  #agendaNotes h4 { margin: 8px 0 3px; font-size: 12px; }
 </style></head><body>
   <div class="head">
     <div><h1>Outlook MCP</h1><p class="sub">Correo y agenda para tu agente, sin login. Motor: Outlook de escritorio.</p></div>
@@ -264,6 +298,12 @@ function render(s: State): string {
     </div>
     <div id="priority" style="margin-top:12px"><p class="muted">Cargando correos prioritarios…</p></div>
     <div id="composer"></div>
+  </div>
+
+  <div class="card">
+    <h2>Agenda <span class="muted" style="font-weight:400">· próximos días</span><span style="flex:1"></span><button class="sec" onclick="post('agendaAssist');document.getElementById('agendaNotes').innerHTML='<div class=\\'composer\\'><p class=\\'muted\\'>Copilot está revisando…</p></div>'">Asistente de agenda</button></h2>
+    <div id="agenda"><p class="muted">Cargando agenda…</p></div>
+    <div id="agendaNotes"></div>
   </div>
 
   <div class="grid2">
@@ -324,8 +364,31 @@ function render(s: State): string {
         ).join('');
       } else if (m.type === 'replyDraft') { renderComposer(m); }
       else if (m.type === 'replySent') { document.getElementById('composer').innerHTML='<div class="composer"><p class="muted">Respuesta enviada.</p></div>'; }
+      else if (m.type === 'agenda') { renderAgenda(m); }
+      else if (m.type === 'agendaNotes') {
+        const box=document.getElementById('agendaNotes');
+        if(m.error){ box.innerHTML='<div class="composer"><p class="muted">No se pudo: '+esc(m.error)+'</p></div>'; }
+        else { box.innerHTML='<div class="composer">'+mdlite(m.notes||'')+'</div>'; }
+      }
     });
+    function mdlite(s){ return esc(s).replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>').split('\\n').map(l=>{const li=l.match(/^\\s*[-*]\\s+(.*)$/);const h=l.match(/^\\s*#{1,4}\\s+(.*)$/);if(li)return '<div>&bull; '+li[1]+'</div>';if(h)return '<h4>'+h[1]+'</h4>';return l.trim()?'<div>'+l+'</div>':'';}).join(''); }
+    function renderAgenda(m){
+      const box=document.getElementById('agenda');
+      if(m.error){ box.innerHTML='<p class="muted">No se pudo leer la agenda: '+esc(m.error)+'</p>'; return; }
+      if(!m.groups||!m.groups.length){ box.innerHTML='<p class="muted">Sin reuniones en los próximos días.</p>'; return; }
+      const freeMap={}; (m.free||[]).forEach(f=>freeMap[f.date]=f.slots);
+      let html='';
+      if(m.conflicts&&m.conflicts.length){ html+='<div class="warn">Empalmes: '+m.conflicts.map(c=>esc(c[0])+' &harr; '+esc(c[1])).join('; ')+'</div>'; }
+      html+=m.groups.map(g=>{
+        const slots=(freeMap[g.date]||[]).map(s=>s.start+'–'+s.end).join(', ');
+        return '<div class="agday"><div class="agdate">'+esc(g.date)+'</div>'+
+          g.items.map(it=>'<div class="row"><span>'+esc((it.start||'').slice(11))+'–'+esc((it.end||'').slice(11))+'  '+esc(it.subject||'(sin título)')+'</span><span class="muted">'+(it.attendees?esc(it.attendees)+' inv.':'')+'</span></div>').join('')+
+          (slots?'<div class="muted" style="padding:4px 0 2px">Libre: '+esc(slots)+'</div>':'')+'</div>';
+      }).join('');
+      box.innerHTML=html;
+    }
     post('loadPriority');
+    post('loadAgenda');
   </script>
 </body></html>`
 }
