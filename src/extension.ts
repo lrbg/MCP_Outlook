@@ -3,7 +3,7 @@ import {
   McpServerEntry, McpFileCorruptError,
   userMcpPathFromGlobalStorage, mergeMcpServers, hasMcpServer,
 } from './mcpConfig'
-import { buildM365Runtime, registerM365McpProvider, M365McpProvider } from './mcpProvider'
+import { buildServers, ServerDef, recipesDir, registerM365McpProvider, M365McpProvider } from './mcpProvider'
 import { M365Tree } from './tree'
 import { openDashboard, refresh as refreshDashboard } from './dashboard'
 import { runDailyReview, maybeRunScheduled } from './dailyReview'
@@ -49,12 +49,18 @@ export function activate(context: vscode.ExtensionContext) {
   reviewTimer = setInterval(tick, 30 * 60 * 1000)
   context.subscriptions.push({ dispose: () => { if (reviewTimer) { clearInterval(reviewTimer) } } })
 
+  reg('m365.openRecipes', async () => {
+    const dir = vscode.Uri.file(recipesDir(context))
+    await vscode.workspace.fs.createDirectory(dir)
+    await vscode.env.openExternal(dir)
+  })
+
   reg('m365.registerMcpServer', async (opts?: { silent?: boolean }) => {
     const silent = !!opts?.silent
     const c = vscode.workspace.getConfiguration('m365')
 
-    const rt = buildM365Runtime(context)
-    const entry: McpServerEntry = { command: 'node', args: [rt.serverPath], env: rt.env }
+    await ensureRecipesSeed(context)
+    const servers = buildServers(context)
 
     const ws = vscode.workspace.workspaceFolders?.[0]
     const wsFile = ws ? vscode.Uri.joinPath(ws.uri, '.vscode', 'mcp.json') : undefined
@@ -62,8 +68,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     if (silent) {
       for (const f of [userFile, wsFile]) {
-        if (f && await mcpFileHasOutlook(f)) {
-          try { await writeMcpEntry(f, entry) } catch { /* se avisara al registrar a mano */ }
+        if (f && await mcpFileHasOurs(f)) {
+          try { await writeAllServers(f, servers) } catch { /* se avisara al registrar a mano */ }
         }
       }
       return
@@ -79,7 +85,7 @@ export function activate(context: vscode.ExtensionContext) {
             { label: 'Todo VS Code', description: 'Disponible en cualquier ventana', scope: 'user' },
             { label: 'Solo este proyecto', description: 'Escribe .vscode/mcp.json en la carpeta abierta', scope: 'workspace' },
           ],
-          { title: 'Outlook: donde registro el servidor MCP?', ignoreFocusOut: true },
+          { title: 'Outlook: donde registro los servidores MCP?', ignoreFocusOut: true },
         )
         if (!pick) { return }
         scope = pick.scope
@@ -89,12 +95,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     const target = (scope === 'workspace' && wsFile) ? wsFile : userFile
     try {
-      await writeMcpEntry(target, entry)
+      await writeAllServers(target, servers)
       const donde = target === userFile
         ? 'MCP registrado para todo VS Code.'
         : 'MCP registrado en .vscode/mcp.json de este proyecto.'
       vscode.window.showInformationMessage(
-        `${donde} Presiona "Start" (o "Restart") para usarlo en Copilot Chat.`,
+        `${donde} Servidores: ${servers.map(s => s.name).join(', ')}. Presiona "Start" (o "Restart") en Copilot Chat.`,
       )
       vscode.window.showTextDocument(target)
       tree?.refresh()
@@ -121,12 +127,45 @@ async function readTextIfExists(uri: vscode.Uri): Promise<string> {
   catch { return '' }
 }
 
-async function mcpFileHasOutlook(uri: vscode.Uri): Promise<boolean> {
+async function mcpFileHasOurs(uri: vscode.Uri): Promise<boolean> {
   return hasMcpServer(await readTextIfExists(uri), 'outlook')
 }
 
-async function writeMcpEntry(file: vscode.Uri, entry: McpServerEntry): Promise<void> {
-  const merged = mergeMcpServers(await readTextIfExists(file), 'outlook', entry)
+/** Escribe (o actualiza) todos nuestros servidores en un mcp.json conservando el resto. */
+async function writeAllServers(file: vscode.Uri, servers: ServerDef[]): Promise<void> {
+  let text = await readTextIfExists(file)
+  for (const s of servers) {
+    const entry: McpServerEntry = { command: s.command, args: s.args, env: s.env }
+    text = mergeMcpServers(text, s.name, entry)
+  }
   await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(file, '..'))
-  await vscode.workspace.fs.writeFile(file, Buffer.from(merged, 'utf8'))
+  await vscode.workspace.fs.writeFile(file, Buffer.from(text, 'utf8'))
+}
+
+/** Crea la carpeta de recetas y siembra un ejemplo la primera vez. */
+async function ensureRecipesSeed(context: vscode.ExtensionContext): Promise<void> {
+  const dir = vscode.Uri.file(recipesDir(context))
+  await vscode.workspace.fs.createDirectory(dir)
+  const sample = vscode.Uri.joinPath(dir, 'ejemplo-kpi.md')
+  try { await vscode.workspace.fs.stat(sample); return } catch { /* no existe: sembrar */ }
+  const md = [
+    '# KPI en algo.com (ejemplo)',
+    '',
+    'Receta de ejemplo. Editala o crea las tuyas (una por sitio).',
+    '',
+    '## Objetivo',
+    'Registrar los KPI de un recurso en el portal.',
+    '',
+    '## Pasos',
+    '1. Abre https://www.algo.com e inicia sesion TU (el agente no teclea contrasenas).',
+    '2. Ve a Reportes > KPIs > Nuevo.',
+    '3. Selecciona el recurso indicado en el correo.',
+    '4. Llena los campos: Meta, Avance, Comentario.',
+    '5. Revisa el resumen y presiona Guardar (confirma antes de guardar).',
+    '',
+    '## Notas',
+    '- Si el sitio pide 2FA, complétalo tu.',
+    '- Los datos exactos (recurso, valores) vienen en el correo que dispara la tarea.',
+  ].join('\n')
+  await vscode.workspace.fs.writeFile(sample, Buffer.from(md, 'utf8'))
 }

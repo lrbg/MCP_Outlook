@@ -41,6 +41,32 @@ en la paleta `Ctrl+Shift+P`):
 - `outlook_shared_calendar` — calendario de otro usuario (con permisos).
 - `outlook_create_event` — crea un evento en tu calendario.
 
+## Bitácora de bandeja (revisión diaria con Copilot)
+
+Un panel dentro del plugin (icono del sobre → **Bitácora**) con una tabla tipo
+bitácora: fecha, no-leídos, remitentes clave y **notas de Copilot**. Se llena
+solo: un temporizador diario lee tus no-leídos (COM) y le pide a **tu Copilot**
+—vía la API `vscode.lm`, sin abrir el chat— que los resuma. Corre mientras VS
+Code esté abierto (se pone al día si estaba cerrado). La primera vez, VS Code
+pide tu permiso para que la extensión use tu modelo de Copilot.
+
+Ajustes: `m365.dailyReview.enabled` / `hour` / `maxEmails`.
+
+## Manos de navegador (Playwright) + recetas
+
+El plugin registra el **Playwright MCP oficial** de Microsoft (vía `npx`), que le
+da al agente manos para abrir sitios, hacer clic, llenar formularios y leer la
+página. Úsalo para tareas como "un correo me pide llenar los KPI en algo.com".
+
+Las **recetas** son procedimientos en markdown (una por sitio) que el agente
+puede leer para saber *cómo* operar un sitio. Tools del servidor de recetas:
+`recipe_list`, `recipe_get`, `recipe_save`. Abre/edita la carpeta con el comando
+`Outlook: Abrir carpeta de recetas`.
+
+Seguridad: **el agente no teclea contraseñas** — tú inicias sesión en el sitio y
+el agente opera ya dentro; conviene que confirmes las acciones finales (Guardar/
+Enviar). Ajustes: `m365.playwright.enabled`, `m365.recipesDir`.
+
 ## Licencia
 
 MIT

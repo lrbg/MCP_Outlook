@@ -1,8 +1,8 @@
 {
   "name": "m365-mcp-plugin",
   "displayName": "Outlook MCP (correo + agenda)",
-  "description": "Da a tu agente de Copilot acceso a tu correo y agenda usando tu Outlook de escritorio (COM), sin login ni permisos de Entra. Incluye una bitacora de revision diaria de bandeja resumida por Copilot. Windows-only.",
-  "version": "0.5.0",
+  "description": "Da a tu agente de Copilot acceso a tu correo y agenda (Outlook de escritorio por COM, sin login), una bitacora de revision diaria resumida por Copilot, y manos de navegador (Playwright MCP) con recetas de sitios. Windows-only.",
+  "version": "0.6.0",
   "publisher": "lrbg",
   "engines": {
     "vscode": "^1.96.0"
@@ -88,6 +88,16 @@
           "minimum": 1,
           "maximum": 100,
           "description": "Cuantos correos no leidos analizar en cada revision diaria."
+        },
+        "m365.playwright.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Registra el Playwright MCP oficial (via npx) para darle al agente manos de navegador: abrir sitios, hacer clic, llenar formularios. Requiere Node/npx en tu equipo."
+        },
+        "m365.recipesDir": {
+          "type": "string",
+          "default": "",
+          "description": "Carpeta donde se guardan las recetas de sitios (procedimientos .md para operar sitios web). Vacio = una carpeta interna del plugin. Pon una ruta si quieres versionarlas."
         }
       }
     },
@@ -108,6 +118,10 @@
       {
         "command": "m365.runDailyReview",
         "title": "Outlook: Correr revision de bandeja ahora"
+      },
+      {
+        "command": "m365.openRecipes",
+        "title": "Outlook: Abrir carpeta de recetas (sitios web)"
       }
     ],
     "menus": {

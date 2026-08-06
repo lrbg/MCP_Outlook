@@ -36,8 +36,10 @@ export class M365Tree implements vscode.TreeDataProvider<vscode.TreeItem> {
     action('Bitacora (revision diaria)', 'checklist', 'm365.openDashboard',
       'Resumen diario de tu bandeja, hecho por Copilot.')
     action('Correr revision ahora', 'play', 'm365.runDailyReview')
-    action('Registrar servidor MCP', 'server-process', 'm365.registerMcpServer',
-      'Publica el servidor para Copilot Chat.')
+    action('Recetas de sitios (Playwright)', 'book', 'm365.openRecipes',
+      'Procedimientos para que el agente opere sitios web con manos de navegador.')
+    action('Registrar servidores MCP', 'server-process', 'm365.registerMcpServer',
+      'Publica Outlook + Recetas + Playwright para Copilot Chat.')
     action('Estado', 'info', 'm365.status')
 
     return items
