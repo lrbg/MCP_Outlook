@@ -68,7 +68,9 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
     case 'loadPriority': {
       if (!panel) { return }
       try {
-        const emails = getPriorityEmails(c.get<string[]>('prioritySenders', []), 14, 20)
+        const days = Math.min(Math.max(Number(m.days) || 14, 1), 60)
+        const max = days <= 1 ? 25 : days <= 7 ? 35 : 50
+        const emails = getPriorityEmails(c.get<string[]>('prioritySenders', []), days, max)
         const meRaw = getMe()
         const me = { name: meRaw.name, email: meRaw.email, tokens: c.get<string[]>('mentionTokens', []) }
         const status = await loadStatus(context)
@@ -289,6 +291,12 @@ function render(s: State): string {
   .lab-directed { color: #3794ff; }
   .lab-mentioned { color: #d9a017; }
   .lab-informative { color: var(--vscode-descriptionForeground); }
+  .controls { display: flex; align-items: center; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
+  .seg { display: inline-flex; border: 1px solid var(--vscode-panel-border); border-radius: 6px; overflow: hidden; }
+  .seg button { background: transparent; color: var(--vscode-foreground); border: none; border-right: 1px solid var(--vscode-panel-border);
+    padding: 5px 12px; font-size: 12px; cursor: pointer; }
+  .seg button:last-child { border-right: none; }
+  .seg button.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
   details.day { border-top: 1px solid var(--vscode-panel-border); padding: 8px 0; }
   details.day summary { cursor: pointer; font-weight: 600; }
   .notes h4 { margin: 8px 0 3px; font-size: 12px; } .notes p { margin: 3px 0; } .notes ul { margin: 3px 0 3px 16px; }
@@ -343,14 +351,21 @@ function render(s: State): string {
   </div>
 
   <div class="card">
-    <h2>Correos prioritarios <span class="muted" style="font-weight:400">· últimas 2 semanas</span></h2>
+    <h2>Correos prioritarios</h2>
     <div class="chips">${senderChips}</div>
     <div class="senderbox">
       <input type="text" id="newSender" placeholder="nombre@empresa.com" onkeydown="if(event.key==='Enter')addSender()">
       <button class="sec" onclick="addSender()">Agregar</button>
       <button class="sec" onclick="loadPriority()">Actualizar</button>
     </div>
-    <label class="switch" style="margin-top:10px"><input type="checkbox" id="actiononly" onchange="renderPriority()"> Solo lo que requiere mi acción</label>
+    <div class="controls">
+      <div class="seg" id="rangeseg">
+        <button data-d="1" onclick="setRange(1)">Hoy</button>
+        <button data-d="7" onclick="setRange(7)">Semana</button>
+        <button data-d="14" class="active" onclick="setRange(14)">2 semanas</button>
+      </div>
+      <label class="switch"><input type="checkbox" id="actiononly" onchange="renderPriority()"> Solo lo que requiere mi acción</label>
+    </div>
     <div id="priority" style="margin-top:12px"><p class="muted">Cargando correos prioritarios…</p></div>
   </div>
 
@@ -385,7 +400,9 @@ function render(s: State): string {
     const store = {};
     function post(type, extra){ vscode.postMessage(Object.assign({type}, extra||{})); }
     function addSender(){ const el=document.getElementById('newSender'); const v=(el.value||'').trim(); if(v){ post('addSender',{email:v}); } }
-    function loadPriority(){ document.getElementById('priority').innerHTML='<p class="muted">Cargando…</p>'; closeModal(); post('loadPriority'); }
+    let priorityDays = 14;
+    function setRange(d){ priorityDays=d; document.querySelectorAll('#rangeseg button').forEach(b=>b.classList.toggle('active', (+b.dataset.d)===d)); loadPriority(); }
+    function loadPriority(){ document.getElementById('priority').innerHTML='<p class="muted">Cargando…</p>'; closeModal(); post('loadPriority',{days:priorityDays}); }
     function esc(s){ return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
     let modalId = null;
@@ -424,7 +441,7 @@ function render(s: State): string {
     function renderPriority(){
       const box=document.getElementById('priority');
       const only=(document.getElementById('actiononly')||{}).checked;
-      if(!allEmails.length){ box.innerHTML='<p class="muted">Sin correos de esos remitentes en las últimas 2 semanas.</p>'; return; }
+      if(!allEmails.length){ box.innerHTML='<p class="muted">Sin correos de esos remitentes en el rango elegido.</p>'; return; }
       let list = only ? allEmails.filter(x=>x.needsAction && !x.status) : allEmails;
       if(!list.length){ box.innerHTML='<p class="muted">Nada pendiente que requiera tu acción.</p>'; return; }
       box.innerHTML=list.map(x=>{
