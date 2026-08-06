@@ -10,6 +10,9 @@ export const isWindows = process.platform === 'win32'
 
 export interface PriorityEmail extends RawEmail {
   id: string
+  to?: string
+  cc?: string
+  bodySnippet?: string
 }
 
 function ps(script: string, env: Record<string, string>): string {
@@ -60,6 +63,9 @@ foreach ($item in $recent) {
         senderEmail = $smtp
         received = $item.ReceivedTime.ToString("yyyy-MM-dd HH:mm")
         unread = $item.UnRead
+        to = $item.To
+        cc = $item.CC
+        bodySnippet = $item.Body.Substring(0, [Math]::Min($item.Body.Length, 1500))
       }
       if ($result.Count -ge ${max}) { break }
     }

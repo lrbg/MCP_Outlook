@@ -2,7 +2,9 @@ import * as vscode from 'vscode'
 import { DayEntry, toMarkdown } from './bitacoraCore'
 import { loadEntries, runDailyReview } from './dailyReview'
 import { getPriorityEmails, isWindows } from './priorityInbox'
-import { readEmailBody, sendReply } from './outlookActions'
+import { classifyPriority, labelText } from './priorityClassify'
+import { loadStatus, setStatus, clearStatus } from './priorityState'
+import { readEmailBody, sendReply, getMe } from './outlookActions'
 import { draftReply, assistAgenda } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
@@ -67,10 +69,28 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
       if (!panel) { return }
       try {
         const emails = getPriorityEmails(c.get<string[]>('prioritySenders', []), 14, 20)
-        panel.webview.postMessage({ type: 'priority', emails })
+        const meRaw = getMe()
+        const me = { name: meRaw.name, email: meRaw.email, tokens: c.get<string[]>('mentionTokens', []) }
+        const status = await loadStatus(context)
+        const enriched = emails.map(e => {
+          const cl = classifyPriority(e, me)
+          return {
+            id: e.id, sender: e.sender, senderEmail: e.senderEmail, subject: e.subject,
+            received: e.received, unread: e.unread,
+            label: cl.label, labelText: labelText(cl.label), needsAction: cl.needsAction,
+            status: status[e.id] || null,
+          }
+        })
+        panel.webview.postMessage({ type: 'priority', emails: enriched, you: me.name })
       } catch (e: any) {
         panel.webview.postMessage({ type: 'priority', error: e?.message || String(e) })
       }
+      return
+    }
+    case 'markStatus': {
+      const now = Date.now()
+      if (m.status) { await setStatus(context, String(m.id), m.status, now) }
+      else { await clearStatus(context, String(m.id)) }
       return
     }
     case 'loadAgenda': {
@@ -250,6 +270,12 @@ function render(s: State): string {
   .mailrow .top { display: flex; justify-content: space-between; gap: 10px; }
   .mailrow .from { font-weight: 600; } .mailrow .subj { color: var(--vscode-descriptionForeground); margin-top: 2px; }
   .mailrow.unread .from::before { content: "\\2022  "; color: var(--vscode-textLink-foreground); }
+  .mailrow.done { opacity: .5; }
+  .mailrow.done .subj { text-decoration: line-through; }
+  .lab { font-size: 10px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; margin-left: 6px; vertical-align: 1px; }
+  .lab-directed { color: #3794ff; }
+  .lab-mentioned { color: #d9a017; }
+  .lab-informative { color: var(--vscode-descriptionForeground); }
   details.day { border-top: 1px solid var(--vscode-panel-border); padding: 8px 0; }
   details.day summary { cursor: pointer; font-weight: 600; }
   .notes h4 { margin: 8px 0 3px; font-size: 12px; } .notes p { margin: 3px 0; } .notes ul { margin: 3px 0 3px 16px; }
@@ -296,6 +322,7 @@ function render(s: State): string {
       <button class="sec" onclick="addSender()">Agregar</button>
       <button class="sec" onclick="loadPriority()">Actualizar</button>
     </div>
+    <label class="switch" style="margin-top:10px"><input type="checkbox" id="actiononly" onchange="renderPriority()"> Solo lo que requiere mi acción</label>
     <div id="priority" style="margin-top:12px"><p class="muted">Cargando correos prioritarios…</p></div>
     <div id="composer"></div>
   </div>
@@ -351,17 +378,34 @@ function render(s: State): string {
     function regen(id){ const t=document.getElementById('rbody'); const instr=(t&&t.dataset.instr)||''; document.getElementById('composer').innerHTML='<div class="composer"><p class="muted">Regenerando…</p></div>'; post('draftReply',{id}); }
     function send(id){ const body=(document.getElementById('rbody')||{}).value||''; const all=(document.getElementById('rall')||{}).checked||false; post('sendReply',{id,body,replyAll:all,sender:(store[id]||{}).sender||''}); }
 
+    let allEmails = [];
+    function statusLabel(s){ return s==='handled'?'Atendido':s==='dismissed'?'No requiere respuesta':''; }
+    function renderPriority(){
+      const box=document.getElementById('priority');
+      const only=(document.getElementById('actiononly')||{}).checked;
+      if(!allEmails.length){ box.innerHTML='<p class="muted">Sin correos de esos remitentes en las últimas 2 semanas.</p>'; return; }
+      let list = only ? allEmails.filter(x=>x.needsAction && !x.status) : allEmails;
+      if(!list.length){ box.innerHTML='<p class="muted">Nada pendiente que requiera tu acción.</p>'; return; }
+      box.innerHTML=list.map(x=>{
+        const lab='<span class="lab lab-'+x.label+'">'+esc(x.labelText)+'</span>';
+        let actions;
+        if(x.status){ actions='<span class="muted">'+statusLabel(x.status)+'</span> <button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',null)">Deshacer</button>'; }
+        else { actions='<button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',\\'handled\\')">Atendido</button>'+
+               '<button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',\\'dismissed\\')">No requiere respuesta</button>'+
+               '<button class="sec" onclick="reply(\\''+esc(x.id)+'\\')">Responder con IA</button>'; }
+        return '<div class="mailrow '+(x.unread?'unread ':'')+(x.status?'done':'')+'"><div class="top"><span class="from">'+esc(x.sender||x.senderEmail)+' '+lab+
+          '</span><span class="muted">'+esc(x.received)+'</span></div><div class="subj">'+esc(x.subject||'(sin asunto)')+'</div>'+
+          '<div class="actions">'+actions+'</div></div>';
+      }).join('');
+    }
+    function markStatus(id,status){ const it=allEmails.find(x=>x.id===id); if(it){ it.status=status; } post('markStatus',{id,status}); renderPriority(); }
+
     window.addEventListener('message', e => {
       const m = e.data;
       if (m.type === 'priority') {
-        const box = document.getElementById('priority');
-        if (m.error) { box.innerHTML = '<p class="muted">No se pudieron leer los correos: ' + esc(m.error) + '</p>'; return; }
-        if (!m.emails || !m.emails.length) { box.innerHTML = '<p class="muted">Sin correos de esos remitentes en las últimas 2 semanas.</p>'; return; }
-        box.innerHTML = m.emails.map(x =>
-          '<div class="mailrow ' + (x.unread?'unread':'') + '"><div class="top"><span class="from">' + esc(x.sender||x.senderEmail) +
-          '</span><span class="muted">' + esc(x.received) + '</span></div><div class="subj">' + esc(x.subject||'(sin asunto)') + '</div>' +
-          '<div class="actions"><button class="sec" onclick="reply(\\''+esc(x.id)+'\\')">Responder con IA</button></div></div>'
-        ).join('');
+        if (m.error) { document.getElementById('priority').innerHTML = '<p class="muted">No se pudieron leer los correos: ' + esc(m.error) + '</p>'; return; }
+        allEmails = m.emails || [];
+        renderPriority();
       } else if (m.type === 'replyDraft') { renderComposer(m); }
       else if (m.type === 'replySent') { document.getElementById('composer').innerHTML='<div class="composer"><p class="muted">Respuesta enviada.</p></div>'; }
       else if (m.type === 'agenda') { renderAgenda(m); }

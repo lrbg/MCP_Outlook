@@ -14,6 +14,27 @@ function ps(script: string, env: Record<string, string> = {}): string {
   }).trim()
 }
 
+/** Identidad del usuario segun el Outlook local (nombre + SMTP). */
+let cachedMe: { name: string; email: string } | undefined
+export function getMe(): { name: string; email: string } {
+  if (cachedMe) { return cachedMe }
+  if (!isWindows) { return { name: '', email: '' } }
+  const script = `
+$ol = New-Object -ComObject Outlook.Application
+$ns = $ol.GetNamespace("MAPI")
+$u = $ns.CurrentUser
+$email = ""
+try { $email = $u.AddressEntry.GetExchangeUser().PrimarySmtpAddress } catch {}
+if (-not $email) { try { $email = $u.Address } catch {} }
+[PSCustomObject]@{ name = $u.Name; email = $email } | ConvertTo-Json
+`
+  try {
+    const j = JSON.parse(ps(script))
+    cachedMe = { name: j.name || '', email: (j.email || '').toLowerCase() }
+  } catch { cachedMe = { name: '', email: '' } }
+  return cachedMe
+}
+
 export interface EmailBody {
   subject: string
   sender: string
