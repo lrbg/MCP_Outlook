@@ -44,8 +44,10 @@ export class M365Tree implements vscode.TreeDataProvider<vscode.TreeItem> {
       items.push(t)
     }
 
-    action('Iniciar sesion (Microsoft)', 'sign-in', 'm365.signIn',
-      'Conecta tu cuenta de organizacion reutilizando la sesion de VS Code.')
+    action('Iniciar sesion (navegador)', 'sign-in', 'm365.signIn',
+      'Login por navegador (recomendado): pasa Conditional Access en equipos unidos a Entra.')
+    action('Iniciar sesion (codigo de dispositivo)', 'device-camera', 'm365.signInDeviceCode',
+      'Alterno: ingresa un codigo en microsoft.com/devicelogin.')
     action('Registrar servidor MCP', 'server-process', 'm365.registerMcpServer',
       'Publica el servidor para Copilot Chat.')
     action('Refrescar sesion', 'refresh', 'm365.refresh')

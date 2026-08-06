@@ -8,11 +8,14 @@ el token vive solo en el almacenamiento local de la extensión.
 
 ## Cómo funciona
 
-1. La extensión pide un token de Microsoft Graph con el proveedor `microsoft`
-   integrado de VS Code (`vscode.authentication.getSession`), usando tu cuenta de
-   organización.
-2. Escribe ese token en `globalStorage/m365-config.json` (fuera del repo) y lo
-   refresca solo cada ~40 min mientras VS Code está abierto.
+1. La extensión obtiene un token de Microsoft Graph con un **login por navegador**
+   (auth-code + PKCE) usando un client id público preconsentido (Microsoft Graph
+   PowerShell por defecto). No usa el proveedor `microsoft` integrado de VS Code
+   porque su app no está preautorizada para pedir permisos de correo/agenda/Teams
+   (da `AADSTS65002`). También hay un flujo alterno por **código de dispositivo**.
+2. Guarda el `refresh_token` cifrado en SecretStorage y escribe el `access_token`
+   en `globalStorage/m365-config.json` (fuera del repo), refrescándolo solo cada
+   ~40 min mientras VS Code está abierto.
 3. El servidor MCP (`mcp/index.mjs`) lee ese token y expone las herramientas.
    Copilot Chat las descubre por el provider MCP nativo de VS Code (o por
    `mcp.json` como respaldo).
@@ -47,10 +50,11 @@ haya concedido de verdad.
 | `Calendars.ReadWrite` | leer y gestionar agenda | bajo |
 | `Chat.ReadWrite` | leer y enviar chats de Teams | medio-alto |
 
-Si un permiso avanzado necesita una app registrada por tu organización, puedes
-apuntar a ella sin tocar el código con las opciones `m365.clientId` y
-`m365.tenantId` (se inyectan como `VSCODE_CLIENT_ID` / `VSCODE_TENANT`). Esos
-valores viven en tu configuración local, nunca en el repo.
+Si el login muestra "Necesita aprobación del administrador" por `Mail.Send` o
+`Chat.ReadWrite`, quítalos de `m365.graph.scopes` para conectar con lo que sí
+concede tu tenant (correo/agenda). Si tu organización te da una App Registration
+propia, apúntala con `m365.graph.clientId` (y `m365.graph.tenantId`). Esos valores
+viven en tu configuración local, nunca en el repo.
 
 ## Herramientas
 

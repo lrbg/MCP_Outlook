@@ -4,7 +4,7 @@ import {
   userMcpPathFromGlobalStorage, mergeMcpServers, hasMcpServer,
 } from './mcpConfig'
 import { buildM365Runtime, registerM365McpProvider, M365McpProvider, POLIBIO_TOKEN_KEY } from './mcpProvider'
-import { signIn, refreshSilent } from './auth'
+import { signIn, signInDeviceCode, refreshSilent } from './auth'
 import { M365Tree } from './tree'
 
 let mcpProvider: M365McpProvider | undefined
@@ -20,20 +20,25 @@ export function activate(context: vscode.ExtensionContext) {
   const reg = (id: string, fn: (...a: any[]) => any) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn))
 
-  reg('m365.signIn', async () => {
-    try {
-      const s = await signIn(context)
-      await buildM365Runtime(context)
-      mcpProvider?.refresh()
+  const afterSignIn = async (s: { account: string; scopes: string[] }) => {
+    await buildM365Runtime(context)
+    mcpProvider?.refresh()
     tree?.refresh()
-      await vscode.commands.executeCommand('m365.registerMcpServer', { silent: true })
-      vscode.window.showInformationMessage(
-        `Sesion iniciada como ${s.account}. Permisos: ${s.scopes.join(', ') || '(ninguno)'}. ` +
-        'Registra el MCP con "M365: Registrar servidor MCP" si es la primera vez.',
-      )
-    } catch (e: any) {
-      vscode.window.showErrorMessage(`No se pudo iniciar sesion: ${e?.message || e}`)
-    }
+    await vscode.commands.executeCommand('m365.registerMcpServer', { silent: true })
+    vscode.window.showInformationMessage(
+      `Sesion iniciada como ${s.account}. Permisos: ${s.scopes.join(', ') || '(ninguno)'}. ` +
+      'Registra el MCP con "M365: Registrar servidor MCP" si es la primera vez.',
+    )
+  }
+
+  reg('m365.signIn', async () => {
+    try { await afterSignIn(await signIn(context)) }
+    catch (e: any) { vscode.window.showErrorMessage(`No se pudo iniciar sesion: ${e?.message || e}`) }
+  })
+
+  reg('m365.signInDeviceCode', async () => {
+    try { await afterSignIn(await signInDeviceCode(context)) }
+    catch (e: any) { vscode.window.showErrorMessage(`No se pudo iniciar sesion (codigo): ${e?.message || e}`) }
   })
 
   reg('m365.refresh', async () => {

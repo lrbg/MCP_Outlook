@@ -2,7 +2,7 @@
   "name": "m365-mcp-plugin",
   "displayName": "Microsoft 365 MCP (Outlook + Teams)",
   "description": "Da a tu agente de Copilot acceso a tu correo, agenda y chats de Teams via Microsoft Graph, reutilizando la sesion de Microsoft de VS Code. Expone todo como servidor MCP para el chat de IA.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "lrbg",
   "engines": {
     "vscode": "^1.96.0"
@@ -56,15 +56,28 @@
     "configuration": {
       "title": "Microsoft 365 MCP",
       "properties": {
-        "m365.clientId": {
+        "m365.graph.clientId": {
           "type": "string",
-          "default": "",
-          "description": "(Opcional) Application (client) ID de una app registrada en Entra ID. Usalo solo si el administrador de tu organizacion no concede los permisos de Graph a la app por defecto de VS Code. Se inyecta como VSCODE_CLIENT_ID en la peticion de sesion. Nunca se guarda en el repo."
+          "default": "14d82eec-204b-4c2f-b7e8-296a70dab67e",
+          "description": "Client ID (App Registration) para el login a Microsoft Graph por navegador/device code. Default: Microsoft Graph PowerShell (preconsentido en muchos tenants, evita el AADSTS65002 de la app de VS Code). Si tu organizacion te da una App Registration propia con Mail/Calendars/Chat, pon aqui su Application (client) ID."
         },
-        "m365.tenantId": {
+        "m365.graph.tenantId": {
           "type": "string",
-          "default": "",
-          "description": "(Opcional) Directory (tenant) ID de tu organizacion. Usalo junto con m365.clientId si necesitas apuntar a un tenant especifico. Se inyecta como VSCODE_TENANT."
+          "default": "organizations",
+          "description": "Tenant para el login: 'organizations' (cuentas de trabajo), 'common', o el Directory (tenant) ID de tu organizacion para forzarlo."
+        },
+        "m365.graph.scopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "User.Read",
+            "Mail.ReadWrite",
+            "Mail.Send",
+            "Calendars.ReadWrite",
+            "Chat.ReadWrite",
+            "offline_access"
+          ],
+          "markdownDescription": "Permisos de Graph a solicitar. Si el login muestra 'Necesita aprobacion del administrador' por `Mail.Send` o `Chat.ReadWrite`, quita esos de la lista para conectar con lo que si concede tu tenant (correo/agenda). `offline_access` se agrega solo."
         },
         "m365.mcpScope": {
           "type": "string",
@@ -96,7 +109,11 @@
     "commands": [
       {
         "command": "m365.signIn",
-        "title": "M365: Iniciar sesion (Microsoft)"
+        "title": "M365: Iniciar sesion (navegador)"
+      },
+      {
+        "command": "m365.signInDeviceCode",
+        "title": "M365: Iniciar sesion (codigo de dispositivo)"
       },
       {
         "command": "m365.refresh",
