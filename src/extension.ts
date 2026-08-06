@@ -5,9 +5,12 @@ import {
 } from './mcpConfig'
 import { buildM365Runtime, registerM365McpProvider, M365McpProvider } from './mcpProvider'
 import { M365Tree } from './tree'
+import { openDashboard, refresh as refreshDashboard } from './dashboard'
+import { runDailyReview, maybeRunScheduled } from './dailyReview'
 
 let mcpProvider: M365McpProvider | undefined
 let tree: M365Tree | undefined
+let reviewTimer: ReturnType<typeof setInterval> | undefined
 
 export function activate(context: vscode.ExtensionContext) {
   mcpProvider = registerM365McpProvider(context)
@@ -25,6 +28,26 @@ export function activate(context: vscode.ExtensionContext) {
         : 'AVISO: este plugin usa Outlook de escritorio por COM y requiere Windows con Outlook.',
     )
   })
+
+  reg('m365.openDashboard', () => openDashboard(context))
+
+  reg('m365.runDailyReview', async () => {
+    try {
+      const e = await runDailyReview(context)
+      await refreshDashboard(context)
+      tree?.refresh()
+      vscode.window.showInformationMessage(`Revision de bandeja lista: ${e.unreadCount} no leidos.`)
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`No se pudo correr la revision: ${err?.message || err}`)
+    }
+  })
+
+  // Programador: intenta al arrancar y cada 30 min (corre mientras VS Code este
+  // abierto; si a la hora configurada estaba cerrado, se pone al dia al abrir).
+  const tick = () => maybeRunScheduled(context, () => { refreshDashboard(context); tree?.refresh() })
+  tick()
+  reviewTimer = setInterval(tick, 30 * 60 * 1000)
+  context.subscriptions.push({ dispose: () => { if (reviewTimer) { clearInterval(reviewTimer) } } })
 
   reg('m365.registerMcpServer', async (opts?: { silent?: boolean }) => {
     const silent = !!opts?.silent

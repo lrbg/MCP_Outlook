@@ -12,3 +12,4 @@ package-lock.json
 .claude/**
 scratchpad/**
 **/.DS_Store
+test/**
