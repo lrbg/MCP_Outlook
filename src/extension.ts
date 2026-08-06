@@ -5,12 +5,17 @@ import {
 } from './mcpConfig'
 import { buildM365Runtime, registerM365McpProvider, M365McpProvider, POLIBIO_TOKEN_KEY } from './mcpProvider'
 import { signIn, refreshSilent } from './auth'
+import { M365Tree } from './tree'
 
 let mcpProvider: M365McpProvider | undefined
+let tree: M365Tree | undefined
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 
 export function activate(context: vscode.ExtensionContext) {
   mcpProvider = registerM365McpProvider(context)
+
+  tree = new M365Tree(context)
+  context.subscriptions.push(vscode.window.registerTreeDataProvider('m365View', tree))
 
   const reg = (id: string, fn: (...a: any[]) => any) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn))
@@ -20,6 +25,7 @@ export function activate(context: vscode.ExtensionContext) {
       const s = await signIn(context)
       await buildM365Runtime(context)
       mcpProvider?.refresh()
+    tree?.refresh()
       await vscode.commands.executeCommand('m365.registerMcpServer', { silent: true })
       vscode.window.showInformationMessage(
         `Sesion iniciada como ${s.account}. Permisos: ${s.scopes.join(', ') || '(ninguno)'}. ` +
@@ -34,6 +40,7 @@ export function activate(context: vscode.ExtensionContext) {
     const s = await refreshSilent(context)
     await buildM365Runtime(context)
     mcpProvider?.refresh()
+    tree?.refresh()
     await vscode.commands.executeCommand('m365.registerMcpServer', { silent: true })
     if (s) {
       vscode.window.showInformationMessage(`Sesion refrescada (${s.account}).`)
@@ -70,6 +77,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
     await buildM365Runtime(context)
     mcpProvider?.refresh()
+    tree?.refresh()
     await vscode.commands.executeCommand('m365.registerMcpServer', { silent: true })
   })
 

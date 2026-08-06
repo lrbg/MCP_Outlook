@@ -2,7 +2,7 @@
   "name": "m365-mcp-plugin",
   "displayName": "Microsoft 365 MCP (Outlook + Teams)",
   "description": "Da a tu agente de Copilot acceso a tu correo, agenda y chats de Teams via Microsoft Graph, reutilizando la sesion de Microsoft de VS Code. Expone todo como servidor MCP para el chat de IA.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "lrbg",
   "engines": {
     "vscode": "^1.96.0"
@@ -26,7 +26,8 @@
   "license": "MIT",
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onView:m365View"
   ],
   "contributes": {
     "mcpServerDefinitionProviders": [
@@ -35,6 +36,23 @@
         "label": "Microsoft 365"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "m365",
+          "title": "Microsoft 365",
+          "icon": "media/m365.svg"
+        }
+      ]
+    },
+    "views": {
+      "m365": [
+        {
+          "id": "m365View",
+          "name": "Outlook + Teams + Minutas"
+        }
+      ]
+    },
     "configuration": {
       "title": "Microsoft 365 MCP",
       "properties": {
