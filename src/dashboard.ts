@@ -93,6 +93,19 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
       else { await clearStatus(context, String(m.id)) }
       return
     }
+    case 'openEmail': {
+      if (!panel) { return }
+      try {
+        const b = readEmailBody(String(m.id))
+        panel.webview.postMessage({
+          type: 'emailBody', id: m.id, subject: b.subject, sender: b.sender,
+          senderEmail: b.senderEmail, to: b.to, cc: b.cc, received: b.received, body: b.body,
+        })
+      } catch (e: any) {
+        panel.webview.postMessage({ type: 'emailBody', id: m.id, error: e?.message || String(e) })
+      }
+      return
+    }
     case 'loadAgenda': {
       if (!panel) { return }
       try {
@@ -288,6 +301,10 @@ function render(s: State): string {
   #composer textarea { width: 100%; box-sizing: border-box; min-height: 160px; resize: vertical; font-family: var(--vscode-font-family);
     padding: 8px; border-radius: 5px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
   #composer .crow { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  #reader .composer { margin-top: 14px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 12px; }
+  #reader .crow { display: flex; gap: 10px; margin-top: 10px; }
+  .mailbody { white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow: auto; margin-top: 10px;
+    padding: 10px; border-top: 1px solid var(--vscode-panel-border); font-size: 12px; line-height: 1.5; }
   .agday { margin-bottom: 10px; }
   .agdate { font-weight: 600; font-size: 12px; color: var(--vscode-descriptionForeground); text-transform: capitalize; margin: 8px 0 2px; }
   #agendaNotes .composer { margin-top: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 12px; }
@@ -324,6 +341,7 @@ function render(s: State): string {
     </div>
     <label class="switch" style="margin-top:10px"><input type="checkbox" id="actiononly" onchange="renderPriority()"> Solo lo que requiere mi acción</label>
     <div id="priority" style="margin-top:12px"><p class="muted">Cargando correos prioritarios…</p></div>
+    <div id="reader"></div>
     <div id="composer"></div>
   </div>
 
@@ -388,9 +406,9 @@ function render(s: State): string {
       if(!list.length){ box.innerHTML='<p class="muted">Nada pendiente que requiera tu acción.</p>'; return; }
       box.innerHTML=list.map(x=>{
         const lab='<span class="lab lab-'+x.label+'">'+esc(x.labelText)+'</span>';
-        let actions;
-        if(x.status){ actions='<span class="muted">'+statusLabel(x.status)+'</span> <button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',null)">Deshacer</button>'; }
-        else { actions='<button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',\\'handled\\')">Atendido</button>'+
+        let actions='<button class="sec" onclick="openEmail(\\''+esc(x.id)+'\\')">Ver</button> ';
+        if(x.status){ actions+='<span class="muted">'+statusLabel(x.status)+'</span> <button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',null)">Deshacer</button>'; }
+        else { actions+='<button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',\\'handled\\')">Atendido</button>'+
                '<button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',\\'dismissed\\')">No requiere respuesta</button>'+
                '<button class="sec" onclick="reply(\\''+esc(x.id)+'\\')">Responder con IA</button>'; }
         return '<div class="mailrow '+(x.unread?'unread ':'')+(x.status?'done':'')+'"><div class="top"><span class="from">'+esc(x.sender||x.senderEmail)+' '+lab+
@@ -399,6 +417,20 @@ function render(s: State): string {
       }).join('');
     }
     function markStatus(id,status){ const it=allEmails.find(x=>x.id===id); if(it){ it.status=status; } post('markStatus',{id,status}); renderPriority(); }
+    function openEmail(id){ const r=document.getElementById('reader'); r.innerHTML='<div class="composer"><p class="muted">Abriendo correo…</p></div>'; r.scrollIntoView({behavior:'smooth',block:'nearest'}); post('openEmail',{id}); }
+    function closeReader(){ document.getElementById('reader').innerHTML=''; }
+    function renderEmail(m){
+      const r=document.getElementById('reader');
+      if(m.error){ r.innerHTML='<div class="composer"><p class="muted">No se pudo abrir: '+esc(m.error)+'</p></div>'; return; }
+      r.innerHTML='<div class="composer"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">'+
+        '<div><div style="font-weight:600">'+esc(m.subject||'(sin asunto)')+'</div>'+
+        '<div class="muted" style="margin:2px 0">De: '+esc(m.sender||'')+' &lt;'+esc(m.senderEmail||'')+'&gt; · '+esc(m.received||'')+'</div>'+
+        '<div class="muted">Para: '+esc(m.to||'-')+(m.cc?' · CC: '+esc(m.cc):'')+'</div></div>'+
+        '<button class="sec" onclick="closeReader()">Cerrar</button></div>'+
+        '<div class="mailbody">'+esc(m.body||'')+'</div>'+
+        '<div class="crow"><button onclick="reply(\\''+esc(m.id)+'\\')">Responder con IA</button></div></div>';
+      r.scrollIntoView({behavior:'smooth',block:'nearest'});
+    }
 
     window.addEventListener('message', e => {
       const m = e.data;
@@ -407,6 +439,7 @@ function render(s: State): string {
         allEmails = m.emails || [];
         renderPriority();
       } else if (m.type === 'replyDraft') { renderComposer(m); }
+      else if (m.type === 'emailBody') { renderEmail(m); }
       else if (m.type === 'replySent') { document.getElementById('composer').innerHTML='<div class="composer"><p class="muted">Respuesta enviada.</p></div>'; }
       else if (m.type === 'agenda') { renderAgenda(m); }
       else if (m.type === 'agendaNotes') {
