@@ -305,6 +305,17 @@ function render(s: State): string {
   #reader .crow { display: flex; gap: 10px; margin-top: 10px; }
   .mailbody { white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow: auto; margin-top: 10px;
     padding: 10px; border-top: 1px solid var(--vscode-panel-border); font-size: 12px; line-height: 1.5; }
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+  .modal { background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-panel-border);
+    border-radius: 10px; width: min(720px, 100%); max-height: 86vh; overflow: auto; padding: 16px 18px; box-shadow: 0 10px 34px rgba(0,0,0,.45); }
+  .mhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .mtitle { font-weight: 600; font-size: 15px; }
+  .mhead .x { background: none; color: var(--vscode-foreground); font-size: 20px; line-height: 1; padding: 0 4px; }
+  .mmeta { margin: 6px 0; font-size: 12px; }
+  .mactions { display: flex; gap: 8px; margin-top: 12px; }
+  #mcompose textarea { width: 100%; box-sizing: border-box; min-height: 170px; resize: vertical; font-family: var(--vscode-font-family);
+    padding: 8px; border-radius: 5px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); margin-top: 12px; }
+  #mcompose .crow { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
   .agday { margin-bottom: 10px; }
   .agdate { font-weight: 600; font-size: 12px; color: var(--vscode-descriptionForeground); text-transform: capitalize; margin: 8px 0 2px; }
   #agendaNotes .composer { margin-top: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 12px; }
@@ -341,8 +352,6 @@ function render(s: State): string {
     </div>
     <label class="switch" style="margin-top:10px"><input type="checkbox" id="actiononly" onchange="renderPriority()"> Solo lo que requiere mi acción</label>
     <div id="priority" style="margin-top:12px"><p class="muted">Cargando correos prioritarios…</p></div>
-    <div id="reader"></div>
-    <div id="composer"></div>
   </div>
 
   <div class="card">
@@ -369,31 +378,45 @@ function render(s: State): string {
     <button onclick="post('registerServers')">Registrar servidores</button>
   </div>
 
+  <div id="modalHost"></div>
+
   <script>
     const vscode = acquireVsCodeApi();
     const store = {};
     function post(type, extra){ vscode.postMessage(Object.assign({type}, extra||{})); }
     function addSender(){ const el=document.getElementById('newSender'); const v=(el.value||'').trim(); if(v){ post('addSender',{email:v}); } }
-    function loadPriority(){ document.getElementById('priority').innerHTML='<p class="muted">Cargando…</p>'; document.getElementById('composer').innerHTML=''; post('loadPriority'); }
+    function loadPriority(){ document.getElementById('priority').innerHTML='<p class="muted">Cargando…</p>'; closeModal(); post('loadPriority'); }
     function esc(s){ return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-    function reply(id){ document.getElementById('composer').innerHTML='<div class="composer"><p class="muted">Copilot está redactando…</p></div>'; post('draftReply',{id}); }
-    function renderComposer(m){
-      const c = document.getElementById('composer');
-      if (m.error) { c.innerHTML='<div class="composer"><p class="muted">No se pudo redactar: '+esc(m.error)+'</p></div>'; return; }
-      store[m.id] = { sender: m.sender };
-      c.innerHTML =
-        '<div class="composer"><div style="font-weight:600;margin-bottom:2px">Responder a '+esc(m.sender)+'</div>'+
-        '<div class="muted" style="margin-bottom:8px">Re: '+esc(m.subject||'')+' · edítalo antes de enviar</div>'+
-        '<textarea id="rbody">'+esc(m.body)+'</textarea>'+
-        '<div class="crow"><label class="switch"><input type="checkbox" id="rall"> Responder a todos</label>'+
-        '<span style="flex:1"></span>'+
-        '<button class="sec" onclick="regen(\\''+m.id+'\\')">Regenerar</button>'+
-        '<button class="sec" onclick="document.getElementById(\\'composer\\').innerHTML=\\'\\'">Cancelar</button>'+
-        '<button onclick="send(\\''+m.id+'\\')">Enviar</button></div></div>';
-      c.scrollIntoView({behavior:'smooth', block:'nearest'});
+    let modalId = null;
+    function openEmail(id, auto){ modalId=id; document.getElementById('modalHost').innerHTML='<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><p class="muted">Abriendo correo…</p></div></div>'; post('openEmail',{id, auto:!!auto}); }
+    function closeModal(){ modalId=null; document.getElementById('modalHost').innerHTML=''; }
+    function renderEmail(m){
+      const host=document.getElementById('modalHost');
+      if(m.error){ host.innerHTML='<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="mhead"><span class="mtitle">Correo</span><button class="x" onclick="closeModal()">&times;</button></div><p class="muted">No se pudo abrir: '+esc(m.error)+'</p></div></div>'; return; }
+      store[m.id]={sender:m.sender};
+      host.innerHTML='<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal">'+
+        '<div class="mhead"><div class="mtitle">'+esc(m.subject||'(sin asunto)')+'</div><button class="x" onclick="closeModal()" aria-label="Cerrar">&times;</button></div>'+
+        '<div class="muted mmeta">De: '+esc(m.sender||'')+' &lt;'+esc(m.senderEmail||'')+'&gt; · '+esc(m.received||'')+'<br>Para: '+esc(m.to||'-')+(m.cc?' · CC: '+esc(m.cc):'')+'</div>'+
+        '<div class="mailbody">'+esc(m.body||'')+'</div>'+
+        '<div class="mactions" id="mactions">'+
+          '<button onclick="draftIA(\\''+esc(m.id)+'\\')">Responder con IA</button>'+
+          '<button class="sec" onclick="replyManual(\\''+esc(m.id)+'\\')">Responder manual</button>'+
+        '</div><div id="mcompose"></div></div></div>';
+      if(m.auto){ draftIA(m.id); }
     }
-    function regen(id){ const t=document.getElementById('rbody'); const instr=(t&&t.dataset.instr)||''; document.getElementById('composer').innerHTML='<div class="composer"><p class="muted">Regenerando…</p></div>'; post('draftReply',{id}); }
+    function draftIA(id){ const a=document.getElementById('mactions'); if(a)a.style.display='none'; document.getElementById('mcompose').innerHTML='<p class="muted" style="margin-top:12px">Copilot está redactando…</p>'; post('draftReply',{id}); }
+    function replyManual(id){ showCompose(id,'',false); }
+    function showCompose(id, body, isIA){
+      const a=document.getElementById('mactions'); if(a)a.style.display='none';
+      document.getElementById('mcompose').innerHTML=
+        '<textarea id="rbody">'+esc(body||'')+'</textarea>'+
+        '<div class="crow"><label class="switch"><input type="checkbox" id="rall"> Responder a todos</label><span style="flex:1"></span>'+
+        (isIA?'<button class="sec" onclick="draftIA(\\''+esc(id)+'\\')">Regenerar</button>':'')+
+        '<button class="sec" onclick="closeModal()">Cancelar</button>'+
+        '<button onclick="send(\\''+esc(id)+'\\')">Enviar</button></div>';
+      const t=document.getElementById('rbody'); if(t){ t.focus(); }
+    }
     function send(id){ const body=(document.getElementById('rbody')||{}).value||''; const all=(document.getElementById('rall')||{}).checked||false; post('sendReply',{id,body,replyAll:all,sender:(store[id]||{}).sender||''}); }
 
     let allEmails = [];
@@ -410,27 +433,13 @@ function render(s: State): string {
         if(x.status){ actions+='<span class="muted">'+statusLabel(x.status)+'</span> <button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',null)">Deshacer</button>'; }
         else { actions+='<button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',\\'handled\\')">Atendido</button>'+
                '<button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',\\'dismissed\\')">No requiere respuesta</button>'+
-               '<button class="sec" onclick="reply(\\''+esc(x.id)+'\\')">Responder con IA</button>'; }
+               '<button class="sec" onclick="openEmail(\\''+esc(x.id)+'\\',true)">Responder con IA</button>'; }
         return '<div class="mailrow '+(x.unread?'unread ':'')+(x.status?'done':'')+'"><div class="top"><span class="from">'+esc(x.sender||x.senderEmail)+' '+lab+
           '</span><span class="muted">'+esc(x.received)+'</span></div><div class="subj">'+esc(x.subject||'(sin asunto)')+'</div>'+
           '<div class="actions">'+actions+'</div></div>';
       }).join('');
     }
     function markStatus(id,status){ const it=allEmails.find(x=>x.id===id); if(it){ it.status=status; } post('markStatus',{id,status}); renderPriority(); }
-    function openEmail(id){ const r=document.getElementById('reader'); r.innerHTML='<div class="composer"><p class="muted">Abriendo correo…</p></div>'; r.scrollIntoView({behavior:'smooth',block:'nearest'}); post('openEmail',{id}); }
-    function closeReader(){ document.getElementById('reader').innerHTML=''; }
-    function renderEmail(m){
-      const r=document.getElementById('reader');
-      if(m.error){ r.innerHTML='<div class="composer"><p class="muted">No se pudo abrir: '+esc(m.error)+'</p></div>'; return; }
-      r.innerHTML='<div class="composer"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">'+
-        '<div><div style="font-weight:600">'+esc(m.subject||'(sin asunto)')+'</div>'+
-        '<div class="muted" style="margin:2px 0">De: '+esc(m.sender||'')+' &lt;'+esc(m.senderEmail||'')+'&gt; · '+esc(m.received||'')+'</div>'+
-        '<div class="muted">Para: '+esc(m.to||'-')+(m.cc?' · CC: '+esc(m.cc):'')+'</div></div>'+
-        '<button class="sec" onclick="closeReader()">Cerrar</button></div>'+
-        '<div class="mailbody">'+esc(m.body||'')+'</div>'+
-        '<div class="crow"><button onclick="reply(\\''+esc(m.id)+'\\')">Responder con IA</button></div></div>';
-      r.scrollIntoView({behavior:'smooth',block:'nearest'});
-    }
 
     window.addEventListener('message', e => {
       const m = e.data;
@@ -438,9 +447,12 @@ function render(s: State): string {
         if (m.error) { document.getElementById('priority').innerHTML = '<p class="muted">No se pudieron leer los correos: ' + esc(m.error) + '</p>'; return; }
         allEmails = m.emails || [];
         renderPriority();
-      } else if (m.type === 'replyDraft') { renderComposer(m); }
+      } else if (m.type === 'replyDraft') {
+        if (m.error) { const c=document.getElementById('mcompose'); if(c){ c.innerHTML='<p class="muted" style="margin-top:12px">No se pudo redactar: '+esc(m.error)+'</p>'; } }
+        else if (modalId===m.id) { showCompose(m.id, m.body, true); }
+      }
       else if (m.type === 'emailBody') { renderEmail(m); }
-      else if (m.type === 'replySent') { document.getElementById('composer').innerHTML='<div class="composer"><p class="muted">Respuesta enviada.</p></div>'; }
+      else if (m.type === 'replySent') { closeModal(); }
       else if (m.type === 'agenda') { renderAgenda(m); }
       else if (m.type === 'agendaNotes') {
         const box=document.getElementById('agendaNotes');
@@ -464,6 +476,7 @@ function render(s: State): string {
       }).join('');
       box.innerHTML=html;
     }
+    window.addEventListener('keydown', e => { if (e.key === 'Escape' && modalId) { closeModal(); } });
     post('loadPriority');
     post('loadAgenda');
   </script>
