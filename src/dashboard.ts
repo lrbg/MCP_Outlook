@@ -76,10 +76,13 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
         const status = await loadStatus(context)
         const enriched = emails.map(e => {
           const cl = classifyPriority(e, me)
+          const replied = !!(e.repliedAt && e.received && e.repliedAt >= e.received)
           return {
             id: e.id, sender: e.sender, senderEmail: e.senderEmail, subject: e.subject,
             received: e.received, unread: e.unread,
-            label: cl.label, labelText: labelText(cl.label), needsAction: cl.needsAction,
+            label: cl.label, labelText: labelText(cl.label),
+            needsAction: cl.needsAction && !replied,
+            replied, repliedAt: e.repliedAt || '', replyBody: e.replyBody || '',
             status: status[e.id] || null,
           }
         })
@@ -291,6 +294,8 @@ function render(s: State): string {
   .lab-directed { color: #3794ff; }
   .lab-mentioned { color: #d9a017; }
   .lab-informative { color: var(--vscode-descriptionForeground); }
+  .lab-replied { color: #3fb950; }
+  .replied-callout { border-left: 3px solid #3fb950; background: rgba(63,185,80,.08); border-radius: 4px; padding: 8px 10px; margin: 10px 0; }
   .controls { display: flex; align-items: center; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
   .seg { display: inline-flex; border: 1px solid var(--vscode-panel-border); border-radius: 6px; overflow: hidden; }
   .seg button { background: transparent; color: var(--vscode-foreground); border: none; border-right: 1px solid var(--vscode-panel-border);
@@ -412,9 +417,12 @@ function render(s: State): string {
       const host=document.getElementById('modalHost');
       if(m.error){ host.innerHTML='<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="mhead"><span class="mtitle">Correo</span><button class="x" onclick="closeModal()">&times;</button></div><p class="muted">No se pudo abrir: '+esc(m.error)+'</p></div></div>'; return; }
       store[m.id]={sender:m.sender};
+      const src=allEmails.find(x=>x.id===m.id)||{};
+      const repliedBlock=src.replied?('<div class="replied-callout"><div style="font-weight:600;color:#3fb950">Ya respondiste este correo · '+esc(src.repliedAt)+'</div><div class="mailbody" style="max-height:200px;border:none;padding:6px 0 0">'+esc(src.replyBody||'(sin texto)')+'</div></div>'):'';
       host.innerHTML='<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal">'+
         '<div class="mhead"><div class="mtitle">'+esc(m.subject||'(sin asunto)')+'</div><button class="x" onclick="closeModal()" aria-label="Cerrar">&times;</button></div>'+
         '<div class="muted mmeta">De: '+esc(m.sender||'')+' &lt;'+esc(m.senderEmail||'')+'&gt; · '+esc(m.received||'')+'<br>Para: '+esc(m.to||'-')+(m.cc?' · CC: '+esc(m.cc):'')+'</div>'+
+        repliedBlock+
         '<div class="mailbody">'+esc(m.body||'')+'</div>'+
         '<div class="mactions" id="mactions">'+
           '<button onclick="draftIA(\\''+esc(m.id)+'\\')">Responder con IA</button>'+
@@ -445,7 +453,7 @@ function render(s: State): string {
       let list = only ? allEmails.filter(x=>x.needsAction && !x.status) : allEmails;
       if(!list.length){ box.innerHTML='<p class="muted">Nada pendiente que requiera tu acción.</p>'; return; }
       box.innerHTML=list.map(x=>{
-        const lab='<span class="lab lab-'+x.label+'">'+esc(x.labelText)+'</span>';
+        const lab='<span class="lab lab-'+x.label+'">'+esc(x.labelText)+'</span>'+(x.replied?'<span class="lab lab-replied">Respondido</span>':'');
         let actions='<button class="sec" onclick="openEmail(\\''+esc(x.id)+'\\')">Ver</button> ';
         if(x.status){ actions+='<span class="muted">'+statusLabel(x.status)+'</span> <button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',null)">Deshacer</button>'; }
         else { actions+='<button class="sec" onclick="markStatus(\\''+esc(x.id)+'\\',\\'handled\\')">Atendido</button>'+
