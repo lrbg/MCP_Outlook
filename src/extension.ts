@@ -4,12 +4,10 @@ import {
   userMcpPathFromGlobalStorage, mergeMcpServers, hasMcpServer,
 } from './mcpConfig'
 import { buildM365Runtime, registerM365McpProvider, M365McpProvider, POLIBIO_TOKEN_KEY } from './mcpProvider'
-import { signIn, signInDeviceCode, refreshSilent } from './auth'
 import { M365Tree } from './tree'
 
 let mcpProvider: M365McpProvider | undefined
 let tree: M365Tree | undefined
-let refreshTimer: ReturnType<typeof setInterval> | undefined
 
 export function activate(context: vscode.ExtensionContext) {
   mcpProvider = registerM365McpProvider(context)
@@ -20,48 +18,12 @@ export function activate(context: vscode.ExtensionContext) {
   const reg = (id: string, fn: (...a: any[]) => any) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn))
 
-  const afterSignIn = async (s: { account: string; scopes: string[] }) => {
-    await buildM365Runtime(context)
-    mcpProvider?.refresh()
-    tree?.refresh()
-    await vscode.commands.executeCommand('m365.registerMcpServer', { silent: true })
-    vscode.window.showInformationMessage(
-      `Sesion iniciada como ${s.account}. Permisos: ${s.scopes.join(', ') || '(ninguno)'}. ` +
-      'Registra el MCP con "M365: Registrar servidor MCP" si es la primera vez.',
-    )
-  }
-
-  reg('m365.signIn', async () => {
-    try { await afterSignIn(await signIn(context)) }
-    catch (e: any) { vscode.window.showErrorMessage(`No se pudo iniciar sesion: ${e?.message || e}`) }
-  })
-
-  reg('m365.signInDeviceCode', async () => {
-    try { await afterSignIn(await signInDeviceCode(context)) }
-    catch (e: any) { vscode.window.showErrorMessage(`No se pudo iniciar sesion (codigo): ${e?.message || e}`) }
-  })
-
-  reg('m365.refresh', async () => {
-    const s = await refreshSilent(context)
-    await buildM365Runtime(context)
-    mcpProvider?.refresh()
-    tree?.refresh()
-    await vscode.commands.executeCommand('m365.registerMcpServer', { silent: true })
-    if (s) {
-      vscode.window.showInformationMessage(`Sesion refrescada (${s.account}).`)
-    } else {
-      vscode.window.showWarningMessage('No hay sesion activa. Ejecuta "M365: Iniciar sesion".')
-    }
-  })
-
   reg('m365.status', async () => {
     const rt = await buildM365Runtime(context)
-    if (!rt.hasSession) {
-      vscode.window.showWarningMessage('Sin sesion de Microsoft. Ejecuta "M365: Iniciar sesion".')
-      return
-    }
+    const polibio = rt.polibioOn ? 'conector Polibio activo' : 'conector Polibio no configurado'
     vscode.window.showInformationMessage(
-      `Microsoft 365 conectado. Permisos concedidos: ${rt.scopes.join(', ') || '(ninguno)'}.`,
+      `Outlook MCP usa tu Outlook de escritorio (sin login). ${polibio}. ` +
+      (process.platform === 'win32' ? '' : 'AVISO: el motor COM requiere Windows con Outlook.'),
     )
   })
 
@@ -98,7 +60,6 @@ export function activate(context: vscode.ExtensionContext) {
     const userFile = vscode.Uri.file(userMcpPathFromGlobalStorage(context.globalStorageUri.fsPath))
 
     if (silent) {
-      // Refresca donde ya este registrado, sin preguntar ni crear archivos nuevos.
       for (const f of [userFile, wsFile]) {
         if (f && await mcpFileHasM365(f)) {
           try { await writeMcpEntry(f, entry) } catch { /* se avisara al registrar a mano */ }
@@ -135,6 +96,7 @@ export function activate(context: vscode.ExtensionContext) {
         `${donde} Presiona "Start" (o "Restart") para usarlo en Copilot Chat.`,
       )
       vscode.window.showTextDocument(target)
+      tree?.refresh()
     } catch (e: any) {
       if (e instanceof McpFileCorruptError) {
         const abrir = 'Abrir archivo'
@@ -149,22 +111,11 @@ export function activate(context: vscode.ExtensionContext) {
     }
   })
 
-  // Escribe la config al arrancar (reusa la sesion si ya existe) y refresca el
-  // token cada 40 min mientras VS Code este abierto, para minimizar 401 por token
-  // expirado (opcion B: token en archivo).
-  buildM365Runtime(context).catch(() => { /* sin sesion aun */ })
-  refreshTimer = setInterval(() => {
-    refreshSilent(context)
-      .then(() => buildM365Runtime(context))
-      .then(() => vscode.commands.executeCommand('m365.registerMcpServer', { silent: true }))
-      .catch(() => { /* sin sesion; se ignora */ })
-  }, 40 * 60 * 1000)
-  context.subscriptions.push({ dispose: () => { if (refreshTimer) { clearInterval(refreshTimer) } } })
+  // Escribe la config al arrancar (para que el provider nativo tenga el env listo).
+  buildM365Runtime(context).catch(() => { /* nada critico */ })
 }
 
-export function deactivate() {
-  if (refreshTimer) { clearInterval(refreshTimer) }
-}
+export function deactivate() { /* nada que limpiar */ }
 
 // ── Helpers de mcp.json ──────────────────────────────────────────
 async function readTextIfExists(uri: vscode.Uri): Promise<string> {
@@ -173,11 +124,11 @@ async function readTextIfExists(uri: vscode.Uri): Promise<string> {
 }
 
 async function mcpFileHasM365(uri: vscode.Uri): Promise<boolean> {
-  return hasMcpServer(await readTextIfExists(uri), 'microsoft365')
+  return hasMcpServer(await readTextIfExists(uri), 'outlook')
 }
 
 async function writeMcpEntry(file: vscode.Uri, entry: McpServerEntry): Promise<void> {
-  const merged = mergeMcpServers(await readTextIfExists(file), 'microsoft365', entry)
+  const merged = mergeMcpServers(await readTextIfExists(file), 'outlook', entry)
   await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(file, '..'))
   await vscode.workspace.fs.writeFile(file, Buffer.from(merged, 'utf8'))
 }

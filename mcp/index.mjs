@@ -1,36 +1,28 @@
 #!/usr/bin/env node
 /**
- * Servidor MCP de Microsoft 365 (Outlook + Teams) para VS Code / cualquier
- * cliente MCP. Reutiliza el token de Graph de la sesion de Microsoft de VS Code
- * (escrito por la extension en el archivo apuntado por M365_CONFIG_FILE).
+ * Servidor MCP de Outlook (correo + agenda) para VS Code / cualquier cliente MCP.
  *
- * Las herramientas se registran segun los permisos realmente concedidos, para
- * degradar con elegancia cuando el administrador del tenant no otorga alguno.
+ * Motor: Outlook de ESCRITORIO por COM (PowerShell). NO usa Microsoft Graph ni
+ * Entra ID — maneja el Outlook que ya tienes abierto y firmado, evitando el
+ * AADSTS65002 / consentimiento de admin del tenant. Windows-only.
+ *
+ * Extra: conector opcional con el Anotador de minutas de PolibioDesk.
  */
 import { readFileSync } from 'node:fs'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { loadConfig, capabilities } from './config.mjs'
-import { registerMailTools } from './mail.mjs'
-import { registerCalendarTools } from './calendar.mjs'
-import { registerTeamsTools } from './teams.mjs'
-import { registerSkillTools } from './skills.mjs'
-import { registerDiagnosticsTools } from './diagnostics.mjs'
+import { loadConfig } from './config.mjs'
+import { registerOutlookComTools } from './outlookCom.mjs'
 import { registerPolibioTools } from './polibio.mjs'
 
 let version = '0.0.0'
 try { version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || version } catch { /* fallback */ }
 
 const cfg = loadConfig()
-const caps = capabilities(cfg.scopes)
 
-const server = new McpServer({ name: 'm365-mcp', version })
-registerDiagnosticsTools(server, caps)
-registerMailTools(server, caps)
-registerCalendarTools(server, caps)
-registerTeamsTools(server, caps)
-registerSkillTools(server, caps)
-registerPolibioTools(server, cfg.polibio, caps)
+const server = new McpServer({ name: 'outlook-mcp', version })
+registerOutlookComTools(server)
+registerPolibioTools(server, cfg.polibio)
 
 const transport = new StdioServerTransport()
 await server.connect(transport)

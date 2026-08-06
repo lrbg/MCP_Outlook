@@ -14,9 +14,7 @@
  *   token        token de lectura (valida la edge function)
  */
 import { z } from 'zod'
-import { graphGetAll } from './graph.mjs'
-import { getMe } from './me.mjs'
-import { dayRange } from './lib/odata.mjs'
+import { getMeCom } from './comShared.mjs'
 
 const ok = (text) => ({ content: [{ type: 'text', text }] })
 const bad = (text) => ({ content: [{ type: 'text', text }], isError: true })
@@ -43,7 +41,7 @@ async function callMinutas(polibio, action, extra = {}) {
   return data
 }
 
-export function registerPolibioTools(server, polibio, caps) {
+export function registerPolibioTools(server, polibio) {
   if (!polibio || !polibio.functionUrl || !polibio.token || !polibio.anonKey) {
     // Sin configurar: exponemos una sola tool que explica como activarlo.
     server.tool(
@@ -86,45 +84,19 @@ export function registerPolibioTools(server, polibio, caps) {
     },
   )
 
-  // ── Skill: contexto de reunion (minuta + correo + agenda del dia) ──
+  // ── Skill: contexto de reunion (minuta cruda para el agente) ──
   server.tool(
     'meeting_context',
-    'Junta el contexto de una reunion: el texto de la minuta + correos relacionados + eventos de agenda de ese dia. Le da al agente todo para dar notas o pedir mas detalle.',
-    {
-      minutaId: z.string().describe('id de la minuta'),
-      subjectKeyword: z.string().optional().describe('Palabra clave para buscar correos relacionados'),
-      date: z.string().optional().describe('Fecha del dia a revisar en agenda, ISO (default: la de la minuta)'),
-    },
-    async ({ minutaId, subjectKeyword, date }) => {
+    'Devuelve el texto de la minuta para que el agente lo analice y lo cruce con tu correo/agenda (usando outlook_list_calendar y outlook_list_emails).',
+    { minutaId: z.string().describe('id de la minuta') },
+    async ({ minutaId }) => {
       try {
         const minuta = await callMinutas(polibio, 'get', { id: minutaId })
-        const out = {
+        return json({
           minuta: { id: minuta?.id, name: minuta?.name, created_at: minuta?.created_at, text: minuta?.text || '' },
-        }
-
-        if (caps.readMail && subjectKeyword) {
-          const filter = `contains(subject,'${subjectKeyword.replace(/'/g, "''")}')`
-          const path = `/me/messages?$select=id,from,subject,receivedDateTime,bodyPreview&$top=10&$orderby=receivedDateTime desc&$filter=${encodeURIComponent(filter)}`
-          const mails = await graphGetAll(path, 10).catch(() => [])
-          out.relatedEmails = mails.map(m => ({
-            id: m.id, from: m.from?.emailAddress?.address, subject: m.subject,
-            receivedDateTime: m.receivedDateTime, preview: m.bodyPreview,
-          }))
-        }
-
-        if (caps.readCalendar) {
-          const baseDate = date || minuta?.created_at || new Date().toISOString()
-          const { start, end } = dayRange(baseDate, 0)
-          const evPath = `/me/calendarView?startDateTime=${encodeURIComponent(start)}` +
-            `&endDateTime=${encodeURIComponent(end)}&$select=subject,start,end,attendees&$top=50&$orderby=start/dateTime`
-          const events = await graphGetAll(evPath, 50).catch(() => [])
-          out.calendarThatDay = events.map(e => ({
-            subject: e.subject, start: e.start?.dateTime, end: e.end?.dateTime,
-            attendees: (e.attendees || []).map(a => a.emailAddress?.address).filter(Boolean),
-          }))
-        }
-
-        return json(out)
+          hint: 'Para dar contexto, cruza esta minuta con outlook_list_calendar (reuniones de ese dia) y ' +
+            'outlook_list_emails (correos relacionados por asunto/remitente).',
+        })
       } catch (e) { return bad(e.message) }
     },
   )
@@ -132,13 +104,11 @@ export function registerPolibioTools(server, polibio, caps) {
   // ── Skill: mis pendientes (el agente extrae; la tool arma el material) ──
   server.tool(
     'my_action_items',
-    'Reune el texto de una o varias minutas junto con tu identidad, para que el agente extraiga y liste TUS acuerdos/pendientes (los tuyos, no los de otros) y proponga seguimiento con correo/Teams.',
-    {
-      minutaIds: z.array(z.string()).min(1).describe('ids de las minutas a revisar'),
-    },
+    'Reune el texto de una o varias minutas junto con tu identidad (de Outlook), para que el agente extraiga y liste TUS acuerdos/pendientes (los tuyos, no los de otros) y proponga seguimiento con correo.',
+    { minutaIds: z.array(z.string()).min(1).describe('ids de las minutas a revisar') },
     async ({ minutaIds }) => {
       try {
-        const me = await getMe().catch(() => ({ name: '', email: '' }))
+        const me = getMeCom()
         const minutas = []
         for (const id of minutaIds.slice(0, 10)) {
           const m = await callMinutas(polibio, 'get', { id }).catch(() => null)
@@ -150,8 +120,8 @@ export function registerPolibioTools(server, polibio, caps) {
           instruction:
             `Extrae de estas minutas SOLO los acuerdos y pendientes asignados a ${me.name || 'el usuario'} ` +
             `(${me.email}). Ignora los de otras personas. Para cada pendiente indica: descripcion, fecha limite si ` +
-            `aparece, y de que reunion viene. Si algun pendiente se relaciona con un correo o chat de Teams, sugiere ` +
-            `el seguimiento usando las herramientas de correo/Teams.`,
+            `aparece, y de que reunion viene. Si algun pendiente se relaciona con un correo, sugiere el seguimiento ` +
+            `con outlook_send_email o outlook_reply_email.`,
         })
       } catch (e) { return bad(e.message) }
     },

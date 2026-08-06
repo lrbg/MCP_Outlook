@@ -1,8 +1,8 @@
 {
   "name": "m365-mcp-plugin",
-  "displayName": "Microsoft 365 MCP (Outlook + Teams)",
-  "description": "Da a tu agente de Copilot acceso a tu correo, agenda y chats de Teams via Microsoft Graph, reutilizando la sesion de Microsoft de VS Code. Expone todo como servidor MCP para el chat de IA.",
-  "version": "0.2.0",
+  "displayName": "Outlook MCP (correo + agenda)",
+  "description": "Da a tu agente de Copilot acceso a tu correo y agenda usando tu Outlook de escritorio (COM), sin login ni permisos de Entra. Expone todo como servidor MCP. Incluye conector con las minutas de PolibioDesk. Windows-only.",
+  "version": "0.3.0",
   "publisher": "lrbg",
   "engines": {
     "vscode": "^1.96.0"
@@ -13,9 +13,8 @@
   ],
   "keywords": [
     "outlook",
-    "teams",
-    "microsoft 365",
-    "graph",
+    "calendar",
+    "com",
     "mcp",
     "copilot"
   ],
@@ -49,36 +48,13 @@
       "m365": [
         {
           "id": "m365View",
-          "name": "Outlook + Teams + Minutas"
+          "name": "Outlook + Minutas"
         }
       ]
     },
     "configuration": {
-      "title": "Microsoft 365 MCP",
+      "title": "Outlook MCP",
       "properties": {
-        "m365.graph.clientId": {
-          "type": "string",
-          "default": "14d82eec-204b-4c2f-b7e8-296a70dab67e",
-          "description": "Client ID (App Registration) para el login a Microsoft Graph por navegador/device code. Default: Microsoft Graph PowerShell (preconsentido en muchos tenants, evita el AADSTS65002 de la app de VS Code). Si tu organizacion te da una App Registration propia con Mail/Calendars/Chat, pon aqui su Application (client) ID."
-        },
-        "m365.graph.tenantId": {
-          "type": "string",
-          "default": "organizations",
-          "description": "Tenant para el login: 'organizations' (cuentas de trabajo), 'common', o el Directory (tenant) ID de tu organizacion para forzarlo."
-        },
-        "m365.graph.scopes": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [
-            "User.Read",
-            "Mail.ReadWrite",
-            "Mail.Send",
-            "Calendars.ReadWrite",
-            "Chat.ReadWrite",
-            "offline_access"
-          ],
-          "markdownDescription": "Permisos de Graph a solicitar. Si el login muestra 'Necesita aprobacion del administrador' por `Mail.Send` o `Chat.ReadWrite`, quita esos de la lista para conectar con lo que si concede tu tenant (correo/agenda). `offline_access` se agrega solo."
-        },
         "m365.mcpScope": {
           "type": "string",
           "enum": [
@@ -108,28 +84,16 @@
     },
     "commands": [
       {
-        "command": "m365.signIn",
-        "title": "M365: Iniciar sesion (navegador)"
-      },
-      {
-        "command": "m365.signInDeviceCode",
-        "title": "M365: Iniciar sesion (codigo de dispositivo)"
-      },
-      {
-        "command": "m365.refresh",
-        "title": "M365: Refrescar sesion"
-      },
-      {
         "command": "m365.status",
-        "title": "M365: Estado y permisos concedidos"
+        "title": "Outlook: Estado"
       },
       {
         "command": "m365.registerMcpServer",
-        "title": "M365: Registrar servidor MCP (Copilot Chat)"
+        "title": "Outlook: Registrar servidor MCP (Copilot Chat)"
       },
       {
         "command": "m365.setPolibioToken",
-        "title": "M365: Guardar token de Polibio (minutas)"
+        "title": "Outlook: Guardar token de Polibio (minutas)"
       }
     ]
   },

@@ -1,57 +1,38 @@
 import * as vscode from 'vscode'
 import * as path from 'path'
-import { refreshSilent, M365Session } from './auth'
 
 /** Clave de SecretStorage para el token de lectura de minutas de Polibio. */
 export const POLIBIO_TOKEN_KEY = 'm365.polibio.token'
 
 export interface M365Runtime {
-  /** Ruta absoluta al entrypoint del servidor MCP (mcp/index.mjs). */
   serverPath: string
-  /** Variables de entorno para lanzar el server (solo apunta al config). */
   env: Record<string, string>
-  /** Ruta del archivo de config local escrito en globalStorage. */
   cfgFile: string
-  /** true si hay una sesion de Microsoft con token. */
-  hasSession: boolean
-  /** Permisos concedidos (nombres cortos de Graph). */
-  scopes: string[]
-  /** Version de la extension. */
   version: string
+  polibioOn: boolean
 }
 
 /**
- * Escribe `globalStorage/m365-config.json` con el token de Graph de la sesion de
- * Microsoft de VS Code y los permisos concedidos, y devuelve lo necesario para
- * lanzar el servidor MCP por stdio. El token vive SOLO en globalStorage, nunca
- * en el repo. Refresca en silencio (sin abrir dialogos): si no hay sesion, el
- * config queda sin token y las herramientas responderan con un aviso claro.
+ * Escribe `globalStorage/m365-config.json` (solo con el conector opcional de
+ * Polibio) y devuelve lo necesario para lanzar el servidor MCP por stdio.
+ *
+ * El motor de correo/agenda es Outlook de escritorio por COM: NO necesita token
+ * ni login, usa el Outlook que ya esta abierto y firmado. Por eso aqui no hay
+ * nada de Graph/Entra: solo, si el usuario lo configuro, los datos para leer las
+ * minutas de PolibioDesk (URL + anon key de ajustes, token de SecretStorage).
  */
 export async function buildM365Runtime(context: vscode.ExtensionContext): Promise<M365Runtime> {
   await vscode.workspace.fs.createDirectory(context.globalStorageUri)
 
-  let session: M365Session | undefined
-  try { session = await refreshSilent(context) } catch { /* sin sesion todavia */ }
-
-  // Conector opcional con el Anotador de PolibioDesk (minutas). URL + anon key
-  // salen de settings; el token de lectura de SecretStorage. Nada de esto vive
-  // en el repo. Si falta algo, el conector queda desactivado.
-  const polCfg = vscode.workspace.getConfiguration('m365')
-  const polUrl = (polCfg.get<string>('polibio.supabaseUrl', '') || '').trim().replace(/\/+$/, '')
-  const polAnon = (polCfg.get<string>('polibio.anonKey', '') || '').trim()
+  const c = vscode.workspace.getConfiguration('m365')
+  const polUrl = (c.get<string>('polibio.supabaseUrl', '') || '').trim().replace(/\/+$/, '')
+  const polAnon = (c.get<string>('polibio.anonKey', '') || '').trim()
   const polToken = (await context.secrets.get(POLIBIO_TOKEN_KEY)) || ''
   const polibio = (polUrl && polAnon && polToken)
     ? { functionUrl: `${polUrl}/functions/v1/minutas-read`, anonKey: polAnon, token: polToken }
     : null
 
-  const cfg = {
-    accessToken: session?.accessToken || '',
-    scopes: session?.scopes || [],
-    account: session?.account || '',
-    expiresOn: session?.expiresOn || 0,
-    graphBase: 'https://graph.microsoft.com/v1.0',
-    polibio,
-  }
+  const cfg = { polibio }
   const cfgFileUri = vscode.Uri.joinPath(context.globalStorageUri, 'm365-config.json')
   await vscode.workspace.fs.writeFile(cfgFileUri, Buffer.from(JSON.stringify(cfg, null, 2), 'utf8'))
 
@@ -59,23 +40,13 @@ export async function buildM365Runtime(context: vscode.ExtensionContext): Promis
   const env: Record<string, string> = { M365_CONFIG_FILE: cfgFileUri.fsPath }
   const version = (context.extension?.packageJSON?.version as string) || '0.0.0'
 
-  return {
-    serverPath,
-    env,
-    cfgFile: cfgFileUri.fsPath,
-    hasSession: !!session?.accessToken,
-    scopes: session?.scopes || [],
-    version,
-  }
+  return { serverPath, env, cfgFile: cfgFileUri.fsPath, version, polibioOn: !!polibio }
 }
 
 /**
- * Provider nativo de MCP para VS Code (API `vscode.lm.registerMcpServerDefinitionProvider`,
- * estable desde 1.101). Publica el servidor para que Copilot Chat lo descubra solo.
- * En cada descubrimiento reescribe el config, asi el server arranca con token fresco.
- *
- * Se accede a la API via `any` + feature-detect para mantener engines.vscode en ^1.96
- * (en editores viejos se usa el fallback por comando + mcp.json).
+ * Provider nativo de MCP para VS Code (API estable desde 1.101). Publica el
+ * servidor para que Copilot Chat lo descubra solo, con feature-detect via `any`
+ * para mantener engines.vscode en ^1.96 (fallback por comando + mcp.json).
  */
 export class M365McpProvider {
   private readonly _onDidChange = new vscode.EventEmitter<void>()
@@ -94,21 +65,11 @@ export class M365McpProvider {
   }
 
   async resolveMcpServerDefinition(server: any): Promise<any> {
-    const rt = await buildM365Runtime(this.context)
-    if (!rt.hasSession) {
-      vscode.window.showWarningMessage(
-        'Microsoft 365 MCP: no hay sesion. Ejecuta "M365: Iniciar sesion (Microsoft)".',
-      )
-    }
+    await buildM365Runtime(this.context)
     return server
   }
 }
 
-/**
- * Registra el provider nativo si el editor soporta la API (VS Code 1.101+).
- * Devuelve el provider (para refrescarlo al iniciar/refrescar sesion) o undefined
- * si el editor es viejo (se usa el fallback por comando + mcp.json).
- */
 export function registerM365McpProvider(context: vscode.ExtensionContext): M365McpProvider | undefined {
   const lm: any = (vscode as any).lm
   if (!lm || typeof lm.registerMcpServerDefinitionProvider !== 'function') { return undefined }
