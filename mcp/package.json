@@ -1,7 +1,7 @@
 {
-  "name": "m365-mcp-server",
-  "version": "0.1.0",
-  "description": "Servidor MCP de Microsoft 365 (Outlook + Teams) usado por la extension de VS Code",
+  "name": "outlook-mcp-server",
+  "version": "1.0.0",
+  "description": "Servidor MCP de Outlook de escritorio (COM) usado por la extension de VS Code",
   "type": "module",
   "private": true,
   "main": "index.mjs",
@@ -9,8 +9,7 @@
     "start": "node index.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^3.24.4"
+    "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "engines": { "node": ">=20" }
 }

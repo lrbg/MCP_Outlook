@@ -3,7 +3,7 @@ import {
   McpServerEntry, McpFileCorruptError,
   userMcpPathFromGlobalStorage, mergeMcpServers, hasMcpServer,
 } from './mcpConfig'
-import { buildM365Runtime, registerM365McpProvider, M365McpProvider, POLIBIO_TOKEN_KEY } from './mcpProvider'
+import { buildM365Runtime, registerM365McpProvider, M365McpProvider } from './mcpProvider'
 import { M365Tree } from './tree'
 
 let mcpProvider: M365McpProvider | undefined
@@ -19,40 +19,18 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.commands.registerCommand(id, fn))
 
   reg('m365.status', async () => {
-    const rt = await buildM365Runtime(context)
-    const polibio = rt.polibioOn ? 'conector Polibio activo' : 'conector Polibio no configurado'
     vscode.window.showInformationMessage(
-      `Outlook MCP usa tu Outlook de escritorio (sin login). ${polibio}. ` +
-      (process.platform === 'win32' ? '' : 'AVISO: el motor COM requiere Windows con Outlook.'),
+      process.platform === 'win32'
+        ? 'Outlook MCP usa tu Outlook de escritorio (sin login). Registra el MCP y presiona Start en Copilot Chat.'
+        : 'AVISO: este plugin usa Outlook de escritorio por COM y requiere Windows con Outlook.',
     )
-  })
-
-  reg('m365.setPolibioToken', async () => {
-    const token = await vscode.window.showInputBox({
-      title: 'M365: Token de lectura de Polibio (minutas)',
-      prompt: 'Pega el token de la edge function minutas-read de PolibioDesk. Se guarda cifrado en SecretStorage.',
-      password: true,
-      ignoreFocusOut: true,
-    })
-    if (token === undefined) { return }
-    if (token.trim()) {
-      await context.secrets.store(POLIBIO_TOKEN_KEY, token.trim())
-      vscode.window.showInformationMessage('Token de Polibio guardado. Refresca el MCP para activarlo.')
-    } else {
-      await context.secrets.delete(POLIBIO_TOKEN_KEY)
-      vscode.window.showInformationMessage('Token de Polibio borrado (conector desactivado).')
-    }
-    await buildM365Runtime(context)
-    mcpProvider?.refresh()
-    tree?.refresh()
-    await vscode.commands.executeCommand('m365.registerMcpServer', { silent: true })
   })
 
   reg('m365.registerMcpServer', async (opts?: { silent?: boolean }) => {
     const silent = !!opts?.silent
     const c = vscode.workspace.getConfiguration('m365')
 
-    const rt = await buildM365Runtime(context)
+    const rt = buildM365Runtime(context)
     const entry: McpServerEntry = { command: 'node', args: [rt.serverPath], env: rt.env }
 
     const ws = vscode.workspace.workspaceFolders?.[0]
@@ -61,7 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     if (silent) {
       for (const f of [userFile, wsFile]) {
-        if (f && await mcpFileHasM365(f)) {
+        if (f && await mcpFileHasOutlook(f)) {
           try { await writeMcpEntry(f, entry) } catch { /* se avisara al registrar a mano */ }
         }
       }
@@ -78,7 +56,7 @@ export function activate(context: vscode.ExtensionContext) {
             { label: 'Todo VS Code', description: 'Disponible en cualquier ventana', scope: 'user' },
             { label: 'Solo este proyecto', description: 'Escribe .vscode/mcp.json en la carpeta abierta', scope: 'workspace' },
           ],
-          { title: 'M365: donde registro el servidor MCP?', ignoreFocusOut: true },
+          { title: 'Outlook: donde registro el servidor MCP?', ignoreFocusOut: true },
         )
         if (!pick) { return }
         scope = pick.scope
@@ -110,9 +88,6 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
   })
-
-  // Escribe la config al arrancar (para que el provider nativo tenga el env listo).
-  buildM365Runtime(context).catch(() => { /* nada critico */ })
 }
 
 export function deactivate() { /* nada que limpiar */ }
@@ -123,7 +98,7 @@ async function readTextIfExists(uri: vscode.Uri): Promise<string> {
   catch { return '' }
 }
 
-async function mcpFileHasM365(uri: vscode.Uri): Promise<boolean> {
+async function mcpFileHasOutlook(uri: vscode.Uri): Promise<boolean> {
   return hasMcpServer(await readTextIfExists(uri), 'outlook')
 }
 

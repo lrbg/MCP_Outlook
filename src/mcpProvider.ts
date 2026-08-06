@@ -1,46 +1,21 @@
 import * as vscode from 'vscode'
 import * as path from 'path'
 
-/** Clave de SecretStorage para el token de lectura de minutas de Polibio. */
-export const POLIBIO_TOKEN_KEY = 'm365.polibio.token'
-
 export interface M365Runtime {
   serverPath: string
   env: Record<string, string>
-  cfgFile: string
   version: string
-  polibioOn: boolean
 }
 
 /**
- * Escribe `globalStorage/m365-config.json` (solo con el conector opcional de
- * Polibio) y devuelve lo necesario para lanzar el servidor MCP por stdio.
- *
- * El motor de correo/agenda es Outlook de escritorio por COM: NO necesita token
- * ni login, usa el Outlook que ya esta abierto y firmado. Por eso aqui no hay
- * nada de Graph/Entra: solo, si el usuario lo configuro, los datos para leer las
- * minutas de PolibioDesk (URL + anon key de ajustes, token de SecretStorage).
+ * Devuelve lo necesario para lanzar el servidor MCP por stdio. El motor es
+ * Outlook de escritorio por COM: no necesita token, login ni configuracion, usa
+ * el Outlook que ya esta abierto y firmado.
  */
-export async function buildM365Runtime(context: vscode.ExtensionContext): Promise<M365Runtime> {
-  await vscode.workspace.fs.createDirectory(context.globalStorageUri)
-
-  const c = vscode.workspace.getConfiguration('m365')
-  const polUrl = (c.get<string>('polibio.supabaseUrl', '') || '').trim().replace(/\/+$/, '')
-  const polAnon = (c.get<string>('polibio.anonKey', '') || '').trim()
-  const polToken = (await context.secrets.get(POLIBIO_TOKEN_KEY)) || ''
-  const polibio = (polUrl && polAnon && polToken)
-    ? { functionUrl: `${polUrl}/functions/v1/minutas-read`, anonKey: polAnon, token: polToken }
-    : null
-
-  const cfg = { polibio }
-  const cfgFileUri = vscode.Uri.joinPath(context.globalStorageUri, 'm365-config.json')
-  await vscode.workspace.fs.writeFile(cfgFileUri, Buffer.from(JSON.stringify(cfg, null, 2), 'utf8'))
-
+export function buildM365Runtime(context: vscode.ExtensionContext): M365Runtime {
   const serverPath = context.asAbsolutePath(path.join('mcp', 'index.mjs'))
-  const env: Record<string, string> = { M365_CONFIG_FILE: cfgFileUri.fsPath }
   const version = (context.extension?.packageJSON?.version as string) || '0.0.0'
-
-  return { serverPath, env, cfgFile: cfgFileUri.fsPath, version, polibioOn: !!polibio }
+  return { serverPath, env: {}, version }
 }
 
 /**
@@ -57,17 +32,14 @@ export class M365McpProvider {
   refresh(): void { this._onDidChange.fire() }
 
   async provideMcpServerDefinitions(): Promise<any[]> {
-    const rt = await buildM365Runtime(this.context)
+    const rt = buildM365Runtime(this.context)
     const Stdio: any = (vscode as any).McpStdioServerDefinition
-    const def = new Stdio('Microsoft 365', 'node', [rt.serverPath], rt.env, rt.version)
+    const def = new Stdio('Outlook', 'node', [rt.serverPath], rt.env, rt.version)
     def.cwd = vscode.Uri.file(path.dirname(rt.serverPath))
     return [def]
   }
 
-  async resolveMcpServerDefinition(server: any): Promise<any> {
-    await buildM365Runtime(this.context)
-    return server
-  }
+  async resolveMcpServerDefinition(server: any): Promise<any> { return server }
 }
 
 export function registerM365McpProvider(context: vscode.ExtensionContext): M365McpProvider | undefined {
