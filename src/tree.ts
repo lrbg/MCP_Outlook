@@ -33,8 +33,8 @@ export class M365Tree implements vscode.TreeDataProvider<vscode.TreeItem> {
       items.push(t)
     }
 
-    action('Bitacora (revision diaria)', 'checklist', 'm365.openDashboard',
-      'Resumen diario de tu bandeja, hecho por Copilot.')
+    action('Abrir panel de control', 'dashboard', 'm365.openDashboard',
+      'Revision diaria, correos prioritarios, bitacora y recetas.')
     action('Correr revision ahora', 'play', 'm365.runDailyReview')
     action('Recetas de sitios (Playwright)', 'book', 'm365.openRecipes',
       'Procedimientos para que el agente opere sitios web con manos de navegador.')

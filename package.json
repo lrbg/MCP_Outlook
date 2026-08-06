@@ -1,8 +1,8 @@
 {
   "name": "m365-mcp-plugin",
   "displayName": "Outlook MCP (correo + agenda)",
-  "description": "Da a tu agente de Copilot acceso a tu correo y agenda (Outlook de escritorio por COM, sin login), una bitacora de revision diaria resumida por Copilot, y manos de navegador (Playwright MCP) con recetas de sitios. Windows-only.",
-  "version": "0.6.0",
+  "description": "Da a tu agente de Copilot acceso a tu correo y agenda (Outlook de escritorio por COM, sin login), con un panel de control: revision diaria resumida por Copilot, correos prioritarios, recetas de sitios y manos de navegador (Playwright MCP). Windows-only.",
+  "version": "0.7.0",
   "publisher": "lrbg",
   "engines": {
     "vscode": "^1.96.0"
@@ -98,6 +98,12 @@
           "type": "string",
           "default": "",
           "description": "Carpeta donde se guardan las recetas de sitios (procedimientos .md para operar sitios web). Vacio = una carpeta interna del plugin. Pon una ruta si quieres versionarlas."
+        },
+        "m365.prioritySenders": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Correos (email) de las personas prioritarias/de interes. El panel muestra sus ultimos correos de las ultimas 2 semanas. Se administra desde el panel (icono del sobre > Panel)."
         }
       }
     },
@@ -112,8 +118,8 @@
       },
       {
         "command": "m365.openDashboard",
-        "title": "Outlook: Bitacora de bandeja (revision diaria)",
-        "icon": "$(checklist)"
+        "title": "Outlook: Abrir panel de control",
+        "icon": "$(dashboard)"
       },
       {
         "command": "m365.runDailyReview",
