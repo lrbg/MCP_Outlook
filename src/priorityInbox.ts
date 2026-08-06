@@ -5,6 +5,7 @@
  */
 import { execSync } from 'node:child_process'
 import { RawEmail } from './bitacoraCore'
+import { parsePsArray } from './psJson'
 
 export const isWindows = process.platform === 'win32'
 
@@ -73,8 +74,5 @@ foreach ($item in $recent) {
 }
 if ($result.Count -eq 0) { Write-Output "[]" } else { ($result | ConvertTo-Json -Depth 2) -replace '[\x00-\x1F]', ' ' }
 `
-  const out = ps(script, { PRIORITY_SENDERS: list.join(',') })
-  if (!out || !out.trim()) { return [] }
-  const j = JSON.parse(out)
-  return Array.isArray(j) ? j : [j]
+  return parsePsArray(ps(script, { PRIORITY_SENDERS: list.join(',') })) as PriorityEmail[]
 }

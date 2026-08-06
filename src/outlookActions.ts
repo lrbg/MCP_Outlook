@@ -3,6 +3,7 @@
  * cuerpo completo y responder. Datos por variables de entorno (sin inyeccion).
  */
 import { execSync } from 'node:child_process'
+import { cleanPsJson } from './psJson'
 
 export const isWindows = process.platform === 'win32'
 
@@ -29,7 +30,7 @@ if (-not $email) { try { $email = $u.Address } catch {} }
 [PSCustomObject]@{ name = $u.Name; email = $email } | ConvertTo-Json
 `
   try {
-    const j = JSON.parse(ps(script))
+    const j = JSON.parse(cleanPsJson(ps(script)))
     cachedMe = { name: j.name || '', email: (j.email || '').toLowerCase() }
   } catch { cachedMe = { name: '', email: '' } }
   return cachedMe
@@ -59,7 +60,7 @@ $obj = [PSCustomObject]@{
 }
 ($obj | ConvertTo-Json -Depth 2) -replace '[\x00-\x1F]', ' '
 `
-  return JSON.parse(ps(script, { ENTRY_ID: entryId }))
+  return JSON.parse(cleanPsJson(ps(script, { ENTRY_ID: entryId })))
 }
 
 /** Responde el correo por EntryID con el texto dado. */

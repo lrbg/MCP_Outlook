@@ -4,13 +4,14 @@
  */
 import { execSync } from 'node:child_process'
 import { Meeting } from './agendaCore'
+import { parsePsArray } from './psJson'
 
 export const isWindows = process.platform === 'win32'
 
 function ps(script: string): string {
   const full = `$ProgressPreference = 'SilentlyContinue'\n$ErrorActionPreference = 'Stop'\n${script}`
   const encoded = Buffer.from(full, 'utf16le').toString('base64')
-  return execSync(`powershell -NonInteractive -EncodedCommand ${encoded}`, { encoding: 'utf8', timeout: 60000 }).trim()
+  return execSync(`powershell -NonInteractive -EncodedCommand ${encoded}`, { encoding: 'utf8', timeout: 150000 }).trim()
 }
 
 /** Reuniones desde ahora hasta dentro de `days` dias. */
@@ -43,8 +44,5 @@ foreach ($item in $filtered) {
 }
 if ($result.Count -eq 0) { Write-Output "[]" } else { ($result | ConvertTo-Json -Depth 2) -replace '[\x00-\x1F]', ' ' }
 `
-  const out = ps(script)
-  if (!out || !out.trim()) { return [] }
-  const j = JSON.parse(out)
-  return Array.isArray(j) ? j : [j]
+  return parsePsArray(ps(script))
 }
