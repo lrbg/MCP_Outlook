@@ -7,10 +7,10 @@ import { loadAssignments, assign as assignReq, setStatus as setReqStatus, unassi
 import { classifyPriority, labelText } from './priorityClassify'
 import { loadStatus, setStatus, clearStatus } from './priorityState'
 import { readEmailBody, sendReply, sendMail, getMe } from './outlookActions'
-import { draftReply, assistAgenda, summarizePriority, summarizeAssignments } from './copilot'
+import { draftReply, assistAgenda, summarizePriority, summarizeAssignments, summarizeCommits } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
-import { getGithubToken, getTeamCommits } from './github'
+import { getGithubToken, getTeamCommits, listAllRepos } from './github'
 import { log, showLog } from './log'
 import { recipesDir } from './mcpProvider'
 
@@ -239,13 +239,34 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
         if (!org) { panel.webview.postMessage({ type: 'github', error: 'Escribe tu organización de GitHub arriba.' }); return }
         const token = await getGithubToken(false)
         if (!token) { panel.webview.postMessage({ type: 'github', needAuth: true, error: 'Conecta tu cuenta de GitHub.' }); return }
-        if (!authors.length) { panel.webview.postMessage({ type: 'github', org, members: [], repoCount: 0 }); return }
-        const since = new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10)
+        const now = new Date()
+        const year = now.getFullYear()
+        const month = Number.isInteger(m.month) ? Math.max(0, Math.min(11, m.month)) : now.getMonth()
+        const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        const sinceISO = fmt(new Date(year, month, 1))
+        const untilISO = fmt(new Date(year, month + 1, 0))
+        const prog = (text: string) => { if (panel) { panel.webview.postMessage({ type: 'ghProgress', text }) } }
+
+        prog('Cargando repos de la organización…')
+        const allRepos = await listAllRepos(token, org)
+        if (!authors.length) {
+          panel.webview.postMessage({ type: 'github', org, allRepos: allRepos.map(x => ({ full: x.full, pushed: x.pushed })), members: [], repoCount: 0, month })
+          return
+        }
         const r = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: `GitHub: revisando repos de ${org}…`, cancellable: false },
-          (prog) => getTeamCommits(token, org, authors, since, (msg) => prog.report({ message: msg })),
+          { location: vscode.ProgressLocation.Notification, title: `GitHub ${org} · ${sinceISO}..${untilISO}`, cancellable: false },
+          (p) => getTeamCommits(token, org, authors, sinceISO, untilISO, (msg) => { p.report({ message: msg }); prog(msg) }),
         )
-        panel.webview.postMessage({ type: 'github', org, members: r.members, repoCount: r.repoCount })
+        panel.webview.postMessage({
+          type: 'github', org, month,
+          allRepos: allRepos.map(x => ({ full: x.full, pushed: x.pushed })),
+          members: r.members, repoCount: r.repoCount,
+        })
+        try {
+          const memMsgs = r.members.map(mm => ({ author: mm.author, messages: mm.commits.map(c => c.message) }))
+          const descriptions = await summarizeCommits(memMsgs, new vscode.CancellationTokenSource().token)
+          if (panel) { panel.webview.postMessage({ type: 'ghDesc', descriptions }) }
+        } catch { /* sin descripcion */ }
       } catch (e: any) {
         log(`loadGithub error: ${e?.message || e}`)
         panel.webview.postMessage({ type: 'github', error: (e?.message || String(e)) + ' (revisa "Ver log")' })
@@ -437,6 +458,9 @@ function render(s: State): string {
 
   const winWarn = s.windows ? '' : '<div class="warn">Este panel usa Outlook de escritorio (COM) y requiere Windows.</div>'
 
+  const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
+  const curMonth = new Date().getMonth()
+  const monthOpts = MESES.map((n, i) => `<option value="${i}"${i === curMonth ? ' selected' : ''}>${n}</option>`).join('')
   const hourOpts = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${String(h).padStart(2, '0')}:00</option>`).join('')
   const filterBar = (p: string) =>
     `<div class="filters">
@@ -675,26 +699,37 @@ function render(s: State): string {
 
   <div class="card">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <h2>Commits del equipo (GitHub)</h2>
-      <div class="seg" id="ghseg">
-        <button data-r="1" onclick="setGhRange(1)">Día</button>
-        <button data-r="7" onclick="setGhRange(7)">Semana</button>
-        <button data-r="30" class="active" onclick="setGhRange(30)">Mes</button>
-      </div>
+      <h2>GitHub · commits del equipo</h2>
+      <label class="muted" style="font-size:12px">Mes <select id="ghMonth" onchange="loadGithub()">${monthOpts}</select></label>
       <span style="flex:1"></span>
       <button class="sec" onclick="post('githubSignIn')">Conectar GitHub</button>
       <button class="sec" onclick="post('showLog')">Ver log</button>
       <button class="sec" onclick="loadGithub()">Actualizar</button>
     </div>
     <div class="senderbox" style="margin-top:10px">
-      <input type="text" id="ghOrg" placeholder="organización de GitHub (ej. mi-empresa)" value="${esc(s.githubOrg)}" onchange="post('setGithubOrg',{org:this.value})">
+      <input type="text" id="ghOrg" placeholder="organización de GitHub (login de la URL)" value="${esc(s.githubOrg)}" onchange="post('setGithubOrg',{org:this.value})">
     </div>
     <div class="senderbox" style="margin-top:8px">
       <input type="text" id="newGh" placeholder="correo o usuario de GitHub del operador" onkeydown="if(event.key==='Enter')addGh()">
       <button class="sec" onclick="addGh()">Agregar operador</button>
     </div>
     <div class="chips" id="ghchips" style="margin-top:8px"></div>
-    <div id="github" style="margin-top:12px"><p class="muted">Configura organización y operadores, luego Actualizar.</p></div>
+    <div id="ghProgress" class="muted" style="margin-top:10px"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Repos <span class="muted" id="repocount"></span></h2>
+      <div class="filters"><input type="text" placeholder="Filtrar repo por nombre" oninput="ghRepoFilter(this.value)"></div>
+      <div id="ghrepos"><p class="muted">Presiona Actualizar.</p></div>
+      <div id="ghrepos-pager" class="pager"></div>
+    </div>
+    <div class="card">
+      <h2>Operadores <span class="muted" id="opcount"></span></h2>
+      <div class="filters"><input type="text" placeholder="Filtrar operador" oninput="ghOpFilter(this.value)"></div>
+      <div id="ghops"><p class="muted">Agrega operadores y Actualizar.</p></div>
+      <div id="ghops-pager" class="pager"></div>
+    </div>
   </div>
 
   <div id="modalHost"></div>
@@ -820,30 +855,43 @@ function render(s: State): string {
     }
     function mergeSummaries(arr){ const by={}; (arr||[]).forEach(s=>{by[s.id]=s;}); lists.prio.data.forEach(x=>{ const s=by[x.id]; if(s){ x.resumen=s.resumen||''; x.meeting=s.reunion||{es:false}; x.respuesta=s.respuesta||''; } else { x.resumen=x.resumen||''; } }); renderList('prio'); }
 
-    let ghRange = 30;
-    const ghData = { org: '', members: [], team: ${JSON.stringify(s.githubTeam)}, err: '', repoCount: 0 };
-    function setGhRange(r){ ghRange=r; document.querySelectorAll('#ghseg button').forEach(b=>b.classList.toggle('active',(+b.dataset.r)===r)); renderGithub(); }
+    const gh = { org:'', team: ${JSON.stringify(s.githubTeam)}, repos:[], members:[], desc:{}, err:'', repoCount:0, repoPage:0, opPage:0, repoFilter:'', opFilter:'' };
+    const GHPAGE = 8;
     function addGh(){ const el=document.getElementById('newGh'); const v=(el.value||'').trim(); if(v){ post('addGhMember',{email:v}); el.value=''; } }
     function rmGh(m){ post('removeGhMember',{email:m}); }
-    function ghChips(){ document.getElementById('ghchips').innerHTML = ghData.team.length? ghData.team.map(m=>'<span class="chip">'+esc(m)+'<button class="x" onclick="rmGh(\\''+esc(m)+'\\')">&times;</button></span>').join('') : '<span class="muted">Sin operadores. Agrega correos o usuarios de GitHub arriba.</span>'; }
-    function loadGithub(){ document.getElementById('github').innerHTML='<p class="muted">Consultando GitHub…</p>'; post('loadGithub'); }
-    function ghInRange(dateStr){ const d=Date.parse(dateStr); if(!d)return false; return (Date.now()-d) <= ghRange*86400000; }
-    function renderGithub(){
-      const box=document.getElementById('github');
-      if(ghData.err){ box.innerHTML='<p class="muted">'+esc(ghData.err)+'</p>'; return; }
-      if(!ghData.members.length){ box.innerHTML='<p class="muted">Agrega operadores y presiona Actualizar.</p>'; return; }
-      const label = ghRange===1?'hoy':(ghRange===7?'esta semana':'este mes');
-      const head='<div class="muted" style="margin-bottom:8px">'+(ghData.repoCount||0)+' repos activos en '+esc(ghData.org||'')+' (ultimo mes)</div>';
-      const max=Math.max(1, ...ghData.members.map(mm=>(mm.commits||[]).filter(c=>ghInRange(c.date)).length));
-      box.innerHTML=head+ghData.members.map(mm=>{
-        if(mm.error && !(mm.commits&&mm.commits.length)){ return '<div class="wrow"><div class="top"><span class="from">'+esc(mm.author)+'</span><span class="muted">error</span></div><div class="muted wreq">'+esc(mm.error)+'</div></div>'; }
-        const cs=(mm.commits||[]).filter(c=>ghInRange(c.date));
-        const byRepo={}; cs.forEach(c=>{ (byRepo[c.repo]=byRepo[c.repo]||[]).push(c); });
+    function ghChips(){ document.getElementById('ghchips').innerHTML = gh.team.length? gh.team.map(m=>'<span class="chip">'+esc(m)+'<button class="x" onclick="rmGh(\\''+esc(m)+'\\')">&times;</button></span>').join('') : '<span class="muted">Sin operadores. Agrega correos o usuarios de GitHub arriba.</span>'; }
+    function ghMonthVal(){ const el=document.getElementById('ghMonth'); return el? (+el.value) : (new Date().getMonth()); }
+    function loadGithub(){ document.getElementById('ghProgress').textContent='Consultando GitHub…'; document.getElementById('ghrepos').innerHTML='<p class="muted">Cargando…</p>'; document.getElementById('ghops').innerHTML='<p class="muted">Cargando…</p>'; post('loadGithub',{month:ghMonthVal()}); }
+    function ghRepoFilter(v){ gh.repoFilter=(v||'').toLowerCase(); gh.repoPage=0; renderRepos(); }
+    function ghOpFilter(v){ gh.opFilter=(v||'').toLowerCase(); gh.opPage=0; renderOps(); }
+    function ghPage(which,d){ if(which==='repo'){gh.repoPage+=d; renderRepos();} else {gh.opPage+=d; renderOps();} }
+    function ghPager(id,page,pages,total,which){ document.getElementById(id).innerHTML = pages>1 ? ('<button class="sec" onclick="ghPage(\\''+which+'\\',-1)"'+(page===0?' disabled':'')+'>‹ Anterior</button><span class="muted">'+(page+1)+' / '+pages+' · '+total+'</span><button class="sec" onclick="ghPage(\\''+which+'\\',1)"'+(page>=pages-1?' disabled':'')+'>Siguiente ›</button>') : (total?'<span class="muted">'+total+'</span>':''); }
+    function renderRepos(){
+      const box=document.getElementById('ghrepos'); const rc=document.getElementById('repocount'); if(rc)rc.textContent=gh.repos.length?('· '+gh.repos.length):'';
+      if(gh.err){ box.innerHTML='<p class="muted">'+esc(gh.err)+'</p>'; document.getElementById('ghrepos-pager').innerHTML=''; return; }
+      if(!gh.repos.length){ box.innerHTML='<p class="muted">Sin repos (revisa la org y Actualizar).</p>'; document.getElementById('ghrepos-pager').innerHTML=''; return; }
+      const arr=gh.repos.filter(r=>!gh.repoFilter || String(r.full).toLowerCase().includes(gh.repoFilter));
+      const pages=Math.max(1,Math.ceil(arr.length/GHPAGE)); if(gh.repoPage>=pages)gh.repoPage=pages-1; if(gh.repoPage<0)gh.repoPage=0;
+      box.innerHTML = arr.slice(gh.repoPage*GHPAGE,(gh.repoPage+1)*GHPAGE).map(r=>'<div class="mailrow"><div class="top"><span class="from">'+esc(r.full)+'</span><span class="muted">'+esc(r.pushed||'')+'</span></div></div>').join('') || '<p class="muted">Sin coincidencias.</p>';
+      ghPager('ghrepos-pager', gh.repoPage, pages, arr.length, 'repo');
+    }
+    function renderOps(){
+      const box=document.getElementById('ghops'); const oc=document.getElementById('opcount'); if(oc)oc.textContent=gh.members.length?('· '+gh.members.length):'';
+      if(!gh.members.length){ box.innerHTML='<p class="muted">Agrega operadores y Actualizar.</p>'; document.getElementById('ghops-pager').innerHTML=''; return; }
+      const arr=gh.members.filter(mm=>!gh.opFilter || String(mm.author).toLowerCase().includes(gh.opFilter));
+      const pages=Math.max(1,Math.ceil(arr.length/GHPAGE)); if(gh.opPage>=pages)gh.opPage=pages-1; if(gh.opPage<0)gh.opPage=0;
+      const max=Math.max(1,...gh.members.map(mm=>(mm.commits||[]).length));
+      box.innerHTML = arr.slice(gh.opPage*GHPAGE,(gh.opPage+1)*GHPAGE).map(mm=>{
+        const cs=mm.commits||[];
+        const byRepo={}; cs.forEach(c=>{(byRepo[c.repo]=byRepo[c.repo]||[]).push(c);});
         const repos=Object.keys(byRepo).sort();
-        const detail=repos.map(rp=>'<div class="wreq"><strong>'+esc(rp||'(repo)')+'</strong> ('+byRepo[rp].length+')'+byRepo[rp].slice(0,8).map(c=>'<div class="muted" style="padding-left:10px">• '+esc(String(c.date).slice(0,10))+' — '+esc(c.message)+'</div>').join('')+'</div>').join('');
-        return '<div class="wrow"><div class="top"><span class="from">'+esc(mm.author)+'</span><span class="muted">'+cs.length+' commits '+label+'</span></div>'+
-          '<div class="loadbar"><span style="width:'+Math.round(cs.length/max*100)+'%"></span></div>'+(cs.length?detail:'<div class="muted wreq">Sin commits '+label+'.</div>')+'</div>';
-      }).join('');
+        const d=gh.desc[mm.author];
+        const descLine = (d!==undefined)? '<div class="summ">'+esc(d||'—')+'</div>' : (cs.length?'<div class="summ muted">Describiendo…</div>':'');
+        const reposLine = repos.length? repos.map(rp=>'<div class="wreq muted">• '+esc(rp)+' ('+byRepo[rp].length+')</div>').join('') : (mm.error?'<div class="wreq muted">'+esc(mm.error)+'</div>':'<div class="wreq muted">Sin commits este mes.</div>');
+        return '<div class="wrow"><div class="top"><span class="from">'+esc(mm.author)+'</span><span class="muted">'+cs.length+' commits · '+repos.length+' repos</span></div>'+
+          '<div class="loadbar"><span style="width:'+Math.round(cs.length/max*100)+'%"></span></div>'+descLine+reposLine+'</div>';
+      }).join('') || '<p class="muted">Sin coincidencias.</p>';
+      ghPager('ghops-pager', gh.opPage, pages, arr.length, 'op');
     }
 
     const BRD = {
@@ -923,8 +971,10 @@ function render(s: State): string {
       else if (m.type === 'perfRequests') { if(m.error){ document.getElementById('perfRequests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { BRD.perf.reqs=m.items||[]; BRD.perf.page=0; if(m.team)BRD.perf.team=m.team; chipsK('perf'); renderReqsK('perf'); } }
       else if (m.type === 'perfTeam') { BRD.perf.team=m.team||[]; chipsK('perf'); renderReqsK('perf'); }
       else if (m.type === 'analysis') { const B=BRD[m.kind]; if(B){ B.analysis={}; (m.results||[]).forEach(x=>{B.analysis[x.id]=x;}); renderWLK(m.kind); if(m.error){ const el=document.getElementById(B.ids.wl); if(el) el.insertAdjacentHTML('afterbegin','<p class="muted">No se pudo analizar: '+esc(m.error)+'</p>'); } } }
-      else if (m.type === 'github') { ghData.members=m.members||[]; ghData.org=m.org||''; ghData.err=m.error||''; ghData.repoCount=m.repoCount||0; renderGithub(); }
-      else if (m.type === 'ghTeam') { ghData.team=m.team||[]; ghChips(); }
+      else if (m.type === 'ghProgress') { const el=document.getElementById('ghProgress'); if(el) el.textContent=m.text||''; }
+      else if (m.type === 'github') { gh.org=m.org||''; gh.err=m.error||''; gh.repoCount=m.repoCount||0; gh.repos=m.allRepos||[]; gh.members=m.members||[]; gh.desc={}; gh.repoPage=0; gh.opPage=0; const el=document.getElementById('ghProgress'); if(el) el.textContent=''; renderRepos(); renderOps(); }
+      else if (m.type === 'ghDesc') { (m.descriptions||[]).forEach(x=>{gh.desc[x.author]=x.desc;}); gh.members.forEach(mm=>{ if(gh.desc[mm.author]===undefined) gh.desc[mm.author]=''; }); renderOps(); }
+      else if (m.type === 'ghTeam') { gh.team=m.team||[]; ghChips(); }
       else if (m.type === 'ghAuthed') { loadGithub(); }
       else if (m.type === 'replySent') { closeModal(); setTimeout(loadInbox, 1500); }
       else if (m.type === 'agenda') { renderAgenda(m); }

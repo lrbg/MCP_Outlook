@@ -90,6 +90,27 @@ export async function summarizeAssignments(items: any[], token: vscode.Cancellat
   try { const a = JSON.parse(text); return Array.isArray(a) ? a : [] } catch { return [] }
 }
 
+/**
+ * Describe en corto en que trabajo cada operador segun sus mensajes de commit.
+ * Recibe [{author, messages:[...]}], devuelve [{author, desc}]. Una llamada.
+ */
+export async function summarizeCommits(members: any[], token: vscode.CancellationToken): Promise<any[]> {
+  const withMsgs = members.filter(m => (m.messages || []).length)
+  if (!withMsgs.length) { return [] }
+  const model = await pickModel()
+  const compact = withMsgs.map(m => ({ author: m.author, mensajes: (m.messages || []).slice(0, 40) }))
+  const prompt =
+    'Te doy operadores con sus mensajes de commit. Por cada uno, resume en 1 frase CORTA, clara y util (en espanol) ' +
+    'en que estuvo trabajando (temas/areas), no listes commit por commit. Devuelve SOLO un arreglo JSON valido con ' +
+    'objetos { "author": <tal cual>, "desc": <frase corta> }. Nada fuera del JSON.\n\n' +
+    '```json\n' + JSON.stringify(compact) + '\n```'
+  const resp = await model.sendRequest([vscode.LanguageModelChatMessage.User(prompt)], {}, token)
+  let text = ''
+  for await (const chunk of resp.text) { text += chunk }
+  text = text.trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim()
+  try { const a = JSON.parse(text); return Array.isArray(a) ? a : [] } catch { return [] }
+}
+
 /** Redacta un borrador de respuesta al correo dado, para que el usuario lo edite. */
 export async function draftReply(email: EmailBody, token: vscode.CancellationToken, instruction = ''): Promise<string> {
   const model = await pickModel()
