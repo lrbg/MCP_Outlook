@@ -54,39 +54,29 @@ export async function draftReply(email: EmailBody, token: vscode.CancellationTok
  * prompt al modelo por su cuenta. La primera vez, VS Code pide tu consentimiento
  * para que la extension use el modelo.
  */
-export async function summarizeInbox(emails: RawEmail[], token: vscode.CancellationToken): Promise<string> {
-  const lm: any = (vscode as any).lm
-  if (!lm || typeof lm.selectChatModels !== 'function') {
-    throw new Error('Tu VS Code no expone la API de modelos (vscode.lm). Actualiza VS Code.')
-  }
+export async function summarizeInbox(inbox: RawEmail[], sent: RawEmail[], token: vscode.CancellationToken): Promise<string> {
+  const model = await pickModel()
 
-  let models = await lm.selectChatModels({ vendor: 'copilot' })
-  if (!models || models.length === 0) {
-    models = await lm.selectChatModels({}) // cualquier modelo disponible
-  }
-  if (!models || models.length === 0) {
-    throw new Error('No hay ningun modelo de Copilot disponible. Verifica que Copilot este activo en VS Code.')
-  }
-  const model = models[0]
-
-  const compact = emails.map(e => ({
-    de: e.sender || e.senderEmail || '',
-    asunto: e.subject || '',
-    recibido: e.received || '',
-    extracto: (e.preview || '').replace(/\s+/g, ' ').slice(0, 300),
+  const compactIn = inbox.map(e => ({
+    de: e.sender || e.senderEmail || '', asunto: e.subject || '', recibido: e.received || '',
+    noLeido: !!e.unread, extracto: (e.preview || '').replace(/\s+/g, ' ').slice(0, 300),
+  }))
+  const compactOut = sent.map(e => ({
+    para: e.to || '', asunto: e.subject || '', enviado: e.received || '',
+    extracto: (e.preview || '').replace(/\s+/g, ' ').slice(0, 200),
   }))
 
   const prompt =
-    'Eres mi asistente de bandeja de entrada. Abajo van mis correos NO LEIDOS en JSON. ' +
+    'Eres mi asistente de correo. Abajo van mis correos recientes de la BANDEJA DE ENTRADA y de ENVIADOS (JSON). ' +
     'Responde SIEMPRE en espanol, en markdown breve, con estas secciones:\n' +
-    '1. **Requieren mi accion** (lista con vinetas): los 3-6 mas importantes que piden algo de MI, con una linea de por que.\n' +
-    '2. **Temas/remitentes clave**: agrupa lo demas en 2-4 lineas.\n' +
-    '3. **Puede esperar**: 1 linea.\n' +
+    '1. **Requieren mi accion**: los 3-6 de la bandeja de entrada que piden algo de MI y que NO parezcan ya respondidos (revisa Enviados para inferirlo), con una linea de por que.\n' +
+    '2. **Ya respondidos / en curso**: hilos donde ya envie respuesta (usa Enviados), 1-3 lineas.\n' +
+    '3. **Temas/remitentes clave**: agrupa lo demas en 2-4 lineas.\n' +
     'No inventes correos que no esten en los datos. Se conciso.\n\n' +
-    'Correos:\n```json\n' + JSON.stringify(compact, null, 2) + '\n```'
+    'Bandeja de entrada:\n```json\n' + JSON.stringify(compactIn, null, 2) + '\n```\n' +
+    'Enviados:\n```json\n' + JSON.stringify(compactOut, null, 2) + '\n```'
 
-  const messages = [vscode.LanguageModelChatMessage.User(prompt)]
-  const resp = await model.sendRequest(messages, {}, token)
+  const resp = await model.sendRequest([vscode.LanguageModelChatMessage.User(prompt)], {}, token)
   let text = ''
   for await (const chunk of resp.text) { text += chunk }
   return text.trim() || '_Copilot no devolvio notas._'

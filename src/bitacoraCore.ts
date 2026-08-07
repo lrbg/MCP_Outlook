@@ -23,6 +23,7 @@ export interface RawEmail {
   received?: string
   unread?: boolean
   preview?: string
+  to?: string
 }
 
 /** Remitentes mas frecuentes entre los correos dados. */

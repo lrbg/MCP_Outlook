@@ -1,6 +1,6 @@
 import * as vscode from 'vscode'
 import { DayEntry, computeKeySenders, upsertEntry, trimEntries } from './bitacoraCore'
-import { getUnread } from './outlookRead'
+import { getRecent } from './outlookRead'
 import { summarizeInbox } from './copilot'
 
 const FILE = 'bitacora.json'
@@ -38,14 +38,15 @@ function nowStamp(): string {
  * la entrada en la bitacora. Devuelve la entrada creada.
  */
 export async function runDailyReview(context: vscode.ExtensionContext): Promise<DayEntry> {
-  const max = vscode.workspace.getConfiguration('m365').get<number>('dailyReview.maxEmails', 30)
-  const emails = getUnread(max)
+  const max = vscode.workspace.getConfiguration('m365').get<number>('dailyReview.maxEmails', 40)
+  const inbox = getRecent(6, max, 'ReceivedTime')
+  const sent = getRecent(5, max, 'SentOn')
 
   let notes = ''
   try {
     notes = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'Revision de bandeja: Copilot esta resumiendo…' },
-      (_p, token) => summarizeInbox(emails, token),
+      { location: vscode.ProgressLocation.Notification, title: 'Revision de correo: Copilot esta resumiendo…' },
+      (_p, token) => summarizeInbox(inbox, sent, token),
     )
   } catch (e: any) {
     notes = `_No se pudieron generar notas con Copilot: ${e?.message || e}_`
@@ -54,8 +55,8 @@ export async function runDailyReview(context: vscode.ExtensionContext): Promise<
   const entry: DayEntry = {
     date: today(),
     ranAt: nowStamp(),
-    unreadCount: emails.length,
-    keySenders: computeKeySenders(emails),
+    unreadCount: inbox.filter(e => e.unread).length,
+    keySenders: computeKeySenders(inbox),
     notesMarkdown: notes,
   }
 
@@ -79,7 +80,16 @@ export async function maybeRunScheduled(context: vscode.ExtensionContext, onDone
   if (!c.get<boolean>('dailyReview.enabled', true)) { return }
   if (process.platform !== 'win32') { return }
   if (reviewDoneToday(context)) { return }
-  const hour = c.get<number>('dailyReview.hour', 8)
-  if (new Date().getHours() < hour) { return }
+
+  const now = new Date()
+  const days = c.get<number[]>('dailyReview.days', [1, 2, 3, 4, 5])
+  if (!days.includes(now.getDay())) { return } // getDay: 0=Dom .. 6=Sab
+
+  const start = c.get<number>('dailyReview.startHour', 7)
+  const end = c.get<number>('dailyReview.endHour', 3)
+  const h = now.getHours()
+  const inWindow = start <= end ? (h >= start && h < end) : (h >= start || h < end)
+  if (!inWindow) { return }
+
   try { await runDailyReview(context); onDone() } catch { /* se reintenta al proximo tick */ }
 }

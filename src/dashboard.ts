@@ -32,7 +32,9 @@ export async function refresh(context: vscode.ExtensionContext): Promise<void> {
 interface State {
   entries: DayEntry[]
   enabled: boolean
-  hour: number
+  days: number[]
+  startHour: number
+  endHour: number
   maxEmails: number
   senders: string[]
   recipes: string[]
@@ -44,8 +46,10 @@ async function gather(context: vscode.ExtensionContext): Promise<State> {
   return {
     entries: await loadEntries(context),
     enabled: c.get('dailyReview.enabled', true),
-    hour: c.get('dailyReview.hour', 8),
-    maxEmails: c.get('dailyReview.maxEmails', 30),
+    days: c.get<number[]>('dailyReview.days', [1, 2, 3, 4, 5]),
+    startHour: c.get('dailyReview.startHour', 7),
+    endHour: c.get('dailyReview.endHour', 3),
+    maxEmails: c.get('dailyReview.maxEmails', 40),
     senders: c.get<string[]>('prioritySenders', []),
     recipes: await listRecipes(context),
     windows: isWindows,
@@ -345,14 +349,24 @@ function render(s: State): string {
   ${winWarn}
 
   <div class="card">
-    <h2>Revisión diaria de bandeja</h2>
-    <div class="formgrid">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <h2>Revisión de correo</h2>
       <label class="switch">Activada<input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="post('setSetting',{key:'dailyReview.enabled',value:this.checked})"></label>
-      <div><label>Hora de corrida</label><input type="number" min="0" max="23" value="${s.hour}" onchange="post('setSetting',{key:'dailyReview.hour',value:+this.value})"></div>
-      <div><label>Correos a revisar</label><input type="number" min="1" max="100" value="${s.maxEmails}" onchange="post('setSetting',{key:'dailyReview.maxEmails',value:+this.value})"></div>
+    </div>
+    <div style="margin-top:12px">
+      <label>Días</label>
+      <div class="seg" id="daysseg">
+        ${[{ n: 1, l: 'L' }, { n: 2, l: 'M' }, { n: 3, l: 'M' }, { n: 4, l: 'J' }, { n: 5, l: 'V' }, { n: 6, l: 'S' }, { n: 0, l: 'D' }]
+          .map(d => `<button data-n="${d.n}" class="${s.days.includes(d.n) ? 'active' : ''}" onclick="toggleDay(${d.n})">${d.l}</button>`).join('')}
+      </div>
+    </div>
+    <div class="formgrid" style="margin-top:12px">
+      <div><label>Desde (hora)</label><input type="number" min="0" max="23" value="${s.startHour}" onchange="post('setSetting',{key:'dailyReview.startHour',value:+this.value})"></div>
+      <div><label>Hasta (hora)</label><input type="number" min="0" max="23" value="${s.endHour}" onchange="post('setSetting',{key:'dailyReview.endHour',value:+this.value})"></div>
+      <div><label>Correos por carpeta</label><input type="number" min="1" max="100" value="${s.maxEmails}" onchange="post('setSetting',{key:'dailyReview.maxEmails',value:+this.value})"></div>
       <button onclick="post('runReview')">Correr ahora</button>
     </div>
-    <p class="sub" style="margin-top:10px">La resume tu Copilot. Corre sola cada día mientras VS Code esté abierto.</p>
+    <p class="sub" style="margin-top:10px">Corre una vez al día en los días y la ventana horaria elegidos (mientras VS Code esté abierto). Toma ${s.maxEmails} correos de bandeja de entrada y ${s.maxEmails} de enviados, y tu Copilot los resume en la Bitácora.</p>
   </div>
 
   <div class="card">
@@ -409,6 +423,9 @@ function render(s: State): string {
     function setRange(d){ priorityDays=d; document.querySelectorAll('#rangeseg button').forEach(b=>b.classList.toggle('active', (+b.dataset.d)===d)); loadPriority(); }
     function loadPriority(){ document.getElementById('priority').innerHTML='<p class="muted">Cargando…</p>'; closeModal(); post('loadPriority',{days:priorityDays}); }
     function esc(s){ return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+    let reviewDays = ${JSON.stringify(s.days)};
+    function toggleDay(n){ const i=reviewDays.indexOf(n); if(i>=0){reviewDays.splice(i,1);}else{reviewDays.push(n);} document.querySelectorAll('#daysseg button').forEach(b=>b.classList.toggle('active', reviewDays.includes(+b.dataset.n))); post('setSetting',{key:'dailyReview.days',value:reviewDays}); }
 
     let modalId = null;
     function openEmail(id, auto){ modalId=id; document.getElementById('modalHost').innerHTML='<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><p class="muted">Abriendo correo…</p></div></div>'; post('openEmail',{id, auto:!!auto}); }

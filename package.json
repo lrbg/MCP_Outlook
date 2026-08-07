@@ -2,7 +2,7 @@
   "name": "m365-mcp-plugin",
   "displayName": "Outlook MCP (correo + agenda)",
   "description": "Da a tu agente de Copilot acceso a tu correo y agenda (Outlook de escritorio por COM, sin login), con un panel de control: revision diaria resumida por Copilot, correos prioritarios, recetas de sitios y manos de navegador (Playwright MCP). Windows-only.",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "publisher": "lrbg",
   "engines": {
     "vscode": "^1.96.0"
@@ -75,19 +75,32 @@
           "default": true,
           "description": "Corre automaticamente una revision diaria de tu bandeja (no leidos) y la resume con Copilot en la Bitacora. Corre mientras VS Code este abierto."
         },
-        "m365.dailyReview.hour": {
+        "m365.dailyReview.days": {
+          "type": "array",
+          "items": { "type": "number" },
+          "default": [1, 2, 3, 4, 5],
+          "description": "Dias en que corre la revision (0=Dom, 1=Lun ... 6=Sab). Default: lunes a viernes."
+        },
+        "m365.dailyReview.startHour": {
           "type": "number",
-          "default": 8,
+          "default": 7,
           "minimum": 0,
           "maximum": 23,
-          "description": "Hora (0-23) a partir de la cual se corre la revision diaria. Si VS Code estaba cerrado a esa hora, se pone al dia al abrirlo."
+          "description": "Hora de inicio de la ventana en que puede correr la revision (0-23)."
+        },
+        "m365.dailyReview.endHour": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 23,
+          "description": "Hora de fin de la ventana (0-23). Si es menor que la de inicio, la ventana cruza la medianoche (ej. 7 a 3 = 7am a 3am)."
         },
         "m365.dailyReview.maxEmails": {
           "type": "number",
-          "default": 30,
+          "default": 40,
           "minimum": 1,
           "maximum": 100,
-          "description": "Cuantos correos no leidos analizar en cada revision diaria."
+          "description": "Cuantos correos tomar de cada carpeta (bandeja de entrada y enviados) en cada revision."
         },
         "m365.playwright.enabled": {
           "type": "boolean",
