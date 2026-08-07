@@ -2,9 +2,11 @@ import * as vscode from 'vscode'
 import { DayEntry, toMarkdown } from './bitacoraCore'
 import { loadEntries, runDailyReview } from './dailyReview'
 import { getPriorityEmails, getInboxClassified, isWindows } from './priorityInbox'
+import { getDataRequests } from './dataRequests'
+import { loadAssignments, assign as assignReq, setStatus as setReqStatus, unassign as unassignReq } from './dataAssign'
 import { classifyPriority, labelText } from './priorityClassify'
 import { loadStatus, setStatus, clearStatus } from './priorityState'
-import { readEmailBody, sendReply, getMe } from './outlookActions'
+import { readEmailBody, sendReply, sendMail, getMe } from './outlookActions'
 import { draftReply, assistAgenda, summarizePriority } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
@@ -55,6 +57,7 @@ interface State {
   maxEmails: number
   pollMinutes: number
   senders: string[]
+  team: string[]
   recipes: string[]
   windows: boolean
 }
@@ -70,6 +73,7 @@ async function gather(context: vscode.ExtensionContext): Promise<State> {
     maxEmails: c.get('dailyReview.maxEmails', 40),
     pollMinutes: c.get('dailyReview.pollMinutes', 30),
     senders: c.get<string[]>('prioritySenders', []),
+    team: c.get<string[]>('dataTeam', []),
     recipes: await listRecipes(context),
     windows: isWindows,
   }
@@ -106,6 +110,59 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
       } catch (e: any) {
         panel.webview.postMessage({ type: 'inbox', error: e?.message || String(e) })
       }
+      return
+    }
+    case 'loadRequests': {
+      if (!panel) { return }
+      try {
+        const reqs = getDataRequests(45, 150)
+        const map = await loadAssignments(context)
+        const items = reqs.map(r => ({ ...r, assignment: map[r.id] || null }))
+        panel.webview.postMessage({ type: 'requests', items, team: c.get<string[]>('dataTeam', []) })
+      } catch (e: any) {
+        panel.webview.postMessage({ type: 'requests', error: e?.message || String(e) })
+      }
+      return
+    }
+    case 'assignRequest': {
+      const id = String(m.id), member = String(m.member)
+      await assignReq(context, id, member, Date.now())
+      const pick = await vscode.window.showInformationMessage(
+        `Solicitud asignada a ${member}. ¿Enviarle un correo de aviso?`,
+        { modal: false }, 'Enviar aviso',
+      )
+      if (pick === 'Enviar aviso') {
+        const body =
+          `Hola,\n\nSe te asignó una solicitud de Datos Sintéticos.\n\n` +
+          `Solicitante: ${m.solicitante || '-'}\n` +
+          `Equipo: ${m.equipo || '-'}\n` +
+          `Proyecto: ${m.proyecto || '-'}\n` +
+          `Fecha solicitada: ${m.fecha || '-'}\n\n` +
+          `Por favor dale seguimiento. Gracias.`
+        try {
+          sendMail(member, `Solicitud de Datos Sintéticos asignada${m.proyecto ? ' — ' + m.proyecto : ''}`, body)
+          vscode.window.showInformationMessage(`Aviso enviado a ${member}.`)
+        } catch (e: any) {
+          vscode.window.showErrorMessage(`No se pudo enviar el aviso: ${e?.message || e}`)
+        }
+      }
+      return
+    }
+    case 'setRequestStatus': { await setReqStatus(context, String(m.id), m.status === 'finalizada' ? 'finalizada' : 'seguimiento'); return }
+    case 'unassignRequest': { await unassignReq(context, String(m.id)); return }
+    case 'addMember': {
+      const email = String(m.email || '').trim()
+      if (email) {
+        const cur = c.get<string[]>('dataTeam', [])
+        if (!cur.includes(email)) { await c.update('dataTeam', [...cur, email], vscode.ConfigurationTarget.Global) }
+      }
+      if (panel) { panel.webview.postMessage({ type: 'team', team: c.get<string[]>('dataTeam', []) }) }
+      return
+    }
+    case 'removeMember': {
+      const cur = c.get<string[]>('dataTeam', [])
+      await c.update('dataTeam', cur.filter(x => x !== m.email), vscode.ConfigurationTarget.Global)
+      if (panel) { panel.webview.postMessage({ type: 'team', team: c.get<string[]>('dataTeam', []) }) }
       return
     }
     case 'loadPriority': {
@@ -366,6 +423,12 @@ function render(s: State): string {
   .rec { font-size: 11px; margin-top: 2px; }
   .rep { font-size: 11px; color: #3fb950; margin-top: 3px; }
   .pend { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 3px; }
+  .wrow { padding: 8px 0; border-bottom: 1px solid var(--vscode-panel-border); }
+  .wrow:last-child { border-bottom: none; }
+  .loadbar { height: 8px; background: var(--vscode-panel-border); border-radius: 4px; overflow: hidden; margin: 5px 0; }
+  .loadbar span { display: block; height: 100%; background: var(--vscode-button-background); }
+  .wreq { font-size: 11px; padding: 1px 0 1px 6px; }
+  .actions select { max-width: 200px; }
   details.day { border-top: 1px solid var(--vscode-panel-border); padding: 8px 0; }
   details.day summary { cursor: pointer; font-weight: 600; }
   .notes h4 { margin: 8px 0 3px; font-size: 12px; } .notes p { margin: 3px 0; } .notes ul { margin: 3px 0 3px 16px; }
@@ -468,6 +531,32 @@ function render(s: State): string {
       <div id="other-pager" class="pager"></div>
     </div>
   </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2>Solicitudes de Datos Sintéticos</h2>
+      <span style="flex:1"></span>
+      <button class="sec" onclick="loadRequests()">Actualizar</button>
+    </div>
+    <div class="senderbox" style="margin-top:10px">
+      <input type="text" id="newMember" placeholder="correo de un miembro del equipo" onkeydown="if(event.key==='Enter')addMember()">
+      <button class="sec" onclick="addMember()">Agregar miembro</button>
+    </div>
+    <div class="chips" id="teamchips" style="margin-top:8px"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Bandeja de solicitudes <span class="muted" id="reqcount"></span></h2>
+      <div id="requests"><p class="muted">Cargando…</p></div>
+    </div>
+    <div class="card">
+      <h2>Equipo operador <span class="muted" style="font-weight:400">· carga por persona</span></h2>
+      <div id="workload"><p class="muted">—</p></div>
+    </div>
+  </div>
+
+  <div id="modalHost"></div>
 
   <script>
     const vscode = acquireVsCodeApi();
@@ -590,6 +679,52 @@ function render(s: State): string {
     }
     function mergeSummaries(arr){ const by={}; (arr||[]).forEach(s=>{by[s.id]=s;}); lists.prio.data.forEach(x=>{ const s=by[x.id]; if(s){ x.resumen=s.resumen||''; x.meeting=s.reunion||{es:false}; x.respuesta=s.respuesta||''; } else { x.resumen=x.resumen||''; } }); renderList('prio'); }
 
+    let team = ${JSON.stringify(s.team)};
+    let requests = [];
+    function memberName(m){ return String(m||'').split('@')[0]; }
+    function daysSince(ts){ if(!ts)return ''; const n=Math.floor((Date.now()-ts)/86400000); return n<=0?'hoy':(n===1?'1 día':(n+' días')); }
+    function renderTeamChips(){ document.getElementById('teamchips').innerHTML = team.length? team.map(m=>'<span class="chip">'+esc(m)+'<button class="x" onclick="removeMember(\\''+esc(m)+'\\')">&times;</button></span>').join('') : '<span class="muted">Sin miembros. Agrega correos arriba.</span>'; }
+    function addMember(){ const el=document.getElementById('newMember'); const v=(el.value||'').trim(); if(v){ post('addMember',{email:v}); el.value=''; } }
+    function removeMember(m){ post('removeMember',{email:m}); }
+    function loadRequests(){ document.getElementById('requests').innerHTML='<p class="muted">Cargando…</p>'; post('loadRequests'); }
+    function reqSelect(r){ const a=r.assignment; return '<select onchange="assignReq(\\''+esc(r.id)+'\\',this.value)"><option value="">Asignar a…</option>'+team.map(m=>'<option value="'+esc(m)+'"'+(a&&a.member===m?' selected':'')+'>'+esc(memberName(m))+'</option>').join('')+'</select>'; }
+    function renderRequests(){
+      const box=document.getElementById('requests');
+      const rc=document.getElementById('reqcount'); if(rc)rc.textContent=requests.length?('· '+requests.length):'';
+      if(!requests.length){ box.innerHTML='<p class="muted">Sin solicitudes en el rango.</p>'; renderWorkload(); return; }
+      box.innerHTML=requests.map(r=>{
+        const a=r.assignment;
+        let row;
+        if(a){ row='<div class="rec">Asignada a <strong>'+esc(memberName(a.member))+'</strong> · hace '+daysSince(a.assignedAt)+' · '+(a.status==='finalizada'?'<span class="rep">Finalizada</span>':'<span class="pend">En seguimiento</span>')+'</div>'+
+          '<div class="actions">'+reqSelect(r)+
+          (a.status==='finalizada'?'<button class="sec" onclick="setReqStatus(\\''+esc(r.id)+'\\',\\'seguimiento\\')">Reabrir</button>':'<button class="sec" onclick="setReqStatus(\\''+esc(r.id)+'\\',\\'finalizada\\')">Marcar finalizada</button>')+
+          '<button class="sec" onclick="unassignReq(\\''+esc(r.id)+'\\')">Quitar</button>'+
+          '<button class="sec" onclick="openEmail(\\''+esc(r.id)+'\\')">Ver</button></div>';
+        } else { row='<div class="actions">'+reqSelect(r)+'<button class="sec" onclick="openEmail(\\''+esc(r.id)+'\\')">Ver</button></div>'; }
+        return '<div class="mailrow"><div class="top"><span class="from">'+esc(r.solicitante||'(sin solicitante)')+'</span><span class="muted">'+esc(r.received)+'</span></div>'+
+          '<div class="subj">'+esc(r.proyecto||r.subject||'')+'</div>'+
+          '<div class="muted rec">Equipo: '+esc(r.equipo||'—')+' · Fecha solicitada: '+esc(r.fecha||'—')+'</div>'+
+          row+'</div>';
+      }).join('');
+      renderWorkload();
+    }
+    function renderWorkload(){
+      const box=document.getElementById('workload');
+      if(!team.length){ box.innerHTML='<p class="muted">Agrega miembros del equipo para ver la carga.</p>'; return; }
+      const c={}; team.forEach(m=>c[m]={t:0,f:0,s:0,reqs:[]});
+      requests.forEach(r=>{ const a=r.assignment; if(a&&c[a.member]){ c[a.member].t++; if(a.status==='finalizada')c[a.member].f++; else c[a.member].s++; c[a.member].reqs.push(r);} });
+      const max=Math.max(1, ...team.map(m=>c[m].t));
+      box.innerHTML=team.map(m=>{
+        const x=c[m];
+        const reqs=x.reqs.map(r=>'<div class="wreq muted">• '+esc(r.proyecto||r.solicitante||'solicitud')+' · hace '+daysSince(r.assignment.assignedAt)+' · '+(r.assignment.status==='finalizada'?'finalizada':'seguimiento')+'</div>').join('');
+        return '<div class="wrow"><div class="top"><span class="from">'+esc(memberName(m))+'</span><span class="muted">'+x.t+' ('+x.s+' seg · '+x.f+' fin)</span></div>'+
+          '<div class="loadbar"><span style="width:'+Math.round(x.t/max*100)+'%"></span></div>'+reqs+'</div>';
+      }).join('');
+    }
+    function assignReq(id,member){ if(!member)return; const r=requests.find(x=>x.id===id); if(r){ r.assignment={member, assignedAt:(r.assignment&&r.assignment.member===member)?r.assignment.assignedAt:Date.now(), status:r.assignment?r.assignment.status:'seguimiento'}; } post('assignRequest',{id,member,solicitante:(r&&r.solicitante)||'',equipo:(r&&r.equipo)||'',proyecto:(r&&r.proyecto)||'',fecha:(r&&r.fecha)||''}); renderRequests(); }
+    function setReqStatus(id,status){ const r=requests.find(x=>x.id===id); if(r&&r.assignment){ r.assignment.status=status; } post('setRequestStatus',{id,status}); renderRequests(); }
+    function unassignReq(id){ const r=requests.find(x=>x.id===id); if(r){ r.assignment=null; } post('unassignRequest',{id}); renderRequests(); }
+
     window.addEventListener('message', e => {
       const m = e.data;
       if (m.type === 'priority') {
@@ -603,6 +738,8 @@ function render(s: State): string {
       else if (m.type === 'emailBody') { renderEmail(m); }
       else if (m.type === 'inbox') { renderInbox(m); }
       else if (m.type === 'inboxSummaries') { mergeSummaries(m.summaries); }
+      else if (m.type === 'requests') { if(m.error){ document.getElementById('requests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { requests=m.items||[]; team=m.team||team; renderTeamChips(); renderRequests(); } }
+      else if (m.type === 'team') { team=m.team||[]; renderTeamChips(); renderRequests(); }
       else if (m.type === 'replySent') { closeModal(); }
       else if (m.type === 'agenda') { renderAgenda(m); }
       else if (m.type === 'agendaNotes') {
@@ -627,7 +764,9 @@ function render(s: State): string {
       }).join('');
       box.innerHTML=html;
     }
+    renderTeamChips();
     loadInbox();
+    loadRequests();
   </script>
 </body></html>`
 }

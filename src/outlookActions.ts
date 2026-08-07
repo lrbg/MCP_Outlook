@@ -66,6 +66,22 @@ $body = $item.Body; if ($body.Length -gt 8000) { $body = $body.Substring(0, 8000
   return { subject: dec(r.s), sender: dec(r.n), senderEmail: dec(r.e), to: dec(r.t), cc: dec(r.c), received: r.received, body: dec(r.b) }
 }
 
+/** Envia un correo nuevo. */
+export function sendMail(to: string, subject: string, body: string): string {
+  if (!isWindows) { throw new Error('Requiere Windows con Outlook de escritorio.') }
+  const script = `
+$ol = New-Object -ComObject Outlook.Application
+$mail = $ol.CreateItem(0)
+$mail.To = $env:MAIL_TO
+$mail.Subject = $env:MAIL_SUBJECT
+$mail.Body = $env:MAIL_BODY
+$mail.Send()
+Write-Output "enviado"
+`
+  ps(script, { MAIL_TO: to, MAIL_SUBJECT: subject, MAIL_BODY: body })
+  return 'enviado'
+}
+
 /** Responde el correo por EntryID con el texto dado. */
 export function sendReply(entryId: string, body: string, replyAll = false): string {
   if (!isWindows) { throw new Error('Requiere Windows con Outlook de escritorio.') }

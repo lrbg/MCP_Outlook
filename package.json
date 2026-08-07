@@ -2,7 +2,7 @@
   "name": "m365-mcp-plugin",
   "displayName": "Outlook MCP (correo + agenda)",
   "description": "Da a tu agente de Copilot acceso a tu correo y agenda (Outlook de escritorio por COM, sin login), con un panel de control: revision diaria resumida por Copilot, correos prioritarios, recetas de sitios y manos de navegador (Playwright MCP). Windows-only.",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "publisher": "lrbg",
   "engines": {
     "vscode": "^1.96.0"
@@ -136,6 +136,12 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Textos con los que te taggean/mencionan en los correos (ademas de tu nombre de Outlook), ej. '@Batres' o 'Rogelio'. Si un correo los contiene, se marca 'Te mencionan'."
+        },
+        "m365.dataTeam": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Correos de los miembros del equipo operador a quienes asignas las solicitudes de datos sinteticos. Se administra desde el panel."
         }
       }
     },
