@@ -36,6 +36,7 @@ interface State {
   startHour: number
   endHour: number
   maxEmails: number
+  pollMinutes: number
   senders: string[]
   recipes: string[]
   windows: boolean
@@ -50,6 +51,7 @@ async function gather(context: vscode.ExtensionContext): Promise<State> {
     startHour: c.get('dailyReview.startHour', 7),
     endHour: c.get('dailyReview.endHour', 3),
     maxEmails: c.get('dailyReview.maxEmails', 40),
+    pollMinutes: c.get('dailyReview.pollMinutes', 30),
     senders: c.get<string[]>('prioritySenders', []),
     recipes: await listRecipes(context),
     windows: isWindows,
@@ -272,8 +274,9 @@ function render(s: State): string {
   .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--gap); }
   .formgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; align-items: end; }
   label { display: block; font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 4px; }
-  input[type=number], input[type=text] { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 5px;
+  input[type=number], input[type=text], select { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 5px;
     background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
+  select { background: var(--vscode-dropdown-background, var(--vscode-input-background)); color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground)); }
   button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none;
     padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12px; }
   button.sec { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
@@ -363,56 +366,24 @@ function render(s: State): string {
     <div class="formgrid" style="margin-top:12px">
       <div><label>Desde (hora)</label><input type="number" min="0" max="23" value="${s.startHour}" onchange="post('setSetting',{key:'dailyReview.startHour',value:+this.value})"></div>
       <div><label>Hasta (hora)</label><input type="number" min="0" max="23" value="${s.endHour}" onchange="post('setSetting',{key:'dailyReview.endHour',value:+this.value})"></div>
+      <div><label>Sondeo cada</label>
+        <select onchange="post('setSetting',{key:'dailyReview.pollMinutes',value:+this.value})">
+          <option value="10" ${s.pollMinutes === 10 ? 'selected' : ''}>10 min</option>
+          <option value="30" ${s.pollMinutes === 30 ? 'selected' : ''}>30 min</option>
+          <option value="60" ${s.pollMinutes === 60 ? 'selected' : ''}>60 min</option>
+        </select>
+      </div>
       <div><label>Correos por carpeta</label><input type="number" min="1" max="100" value="${s.maxEmails}" onchange="post('setSetting',{key:'dailyReview.maxEmails',value:+this.value})"></div>
       <button onclick="post('runReview')">Correr ahora</button>
     </div>
-    <p class="sub" style="margin-top:10px">Corre una vez al día en los días y la ventana horaria elegidos (mientras VS Code esté abierto). Toma ${s.maxEmails} correos de bandeja de entrada y ${s.maxEmails} de enviados, y tu Copilot los resume en la Bitácora.</p>
+    <p class="sub" style="margin-top:10px">El agente sondea tus correos cada ${s.pollMinutes} min, en los días y la ventana horaria elegidos (mientras VS Code esté abierto). En cada sondeo toma ${s.maxEmails} de bandeja de entrada y ${s.maxEmails} de enviados para detectar correos nuevos y los que ya respondiste, y tu Copilot los resume en la Bitácora.</p>
   </div>
 
   <div class="card">
-    <h2>Correos prioritarios</h2>
-    <div class="chips">${senderChips}</div>
-    <div class="senderbox">
-      <input type="text" id="newSender" placeholder="nombre@empresa.com" onkeydown="if(event.key==='Enter')addSender()">
-      <button class="sec" onclick="addSender()">Agregar</button>
-      <button class="sec" onclick="loadPriority()">Actualizar</button>
-    </div>
-    <div class="controls">
-      <div class="seg" id="rangeseg">
-        <button data-d="1" onclick="setRange(1)">Hoy</button>
-        <button data-d="7" onclick="setRange(7)">Semana</button>
-        <button data-d="14" class="active" onclick="setRange(14)">2 semanas</button>
-      </div>
-      <label class="switch"><input type="checkbox" id="actiononly" onchange="renderPriority()"> Solo lo que requiere mi acción</label>
-    </div>
-    <div id="priority" style="margin-top:12px"><p class="muted">Cargando correos prioritarios…</p></div>
+    <h2>Bitácora <span class="muted" style="font-weight:400">· resúmenes de cada sondeo</span><span style="flex:1"></span><button class="sec" onclick="post('exportMd')">Guardar .md</button></h2>
+    ${bitacoraRows}
+    ${notes}
   </div>
-
-  <div class="card">
-    <h2>Agenda <span class="muted" style="font-weight:400">· próximos días</span><span style="flex:1"></span><button class="sec" onclick="post('agendaAssist');document.getElementById('agendaNotes').innerHTML='<div class=\\'composer\\'><p class=\\'muted\\'>Copilot está revisando…</p></div>'">Asistente de agenda</button></h2>
-    <div id="agenda"><p class="muted">Cargando agenda…</p></div>
-    <div id="agendaNotes"></div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <h2>Bitácora <span style="flex:1"></span></h2>
-      ${bitacoraRows}
-      ${notes}
-      <div class="toolbar" style="margin-top:12px"><button class="sec" onclick="post('exportMd')">Guardar .md</button></div>
-    </div>
-    <div class="card">
-      <h2>Recetas de sitios <span style="flex:1"></span><button class="sec" style="padding:3px 10px" onclick="post('openRecipes')">+ Carpeta</button></h2>
-      ${recipes}
-    </div>
-  </div>
-
-  <div class="card" style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap">
-    <span class="muted">3 servidores MCP listos para Copilot Chat</span>
-    <button onclick="post('registerServers')">Registrar servidores</button>
-  </div>
-
-  <div id="modalHost"></div>
 
   <script>
     const vscode = acquireVsCodeApi();
@@ -518,9 +489,6 @@ function render(s: State): string {
       }).join('');
       box.innerHTML=html;
     }
-    window.addEventListener('keydown', e => { if (e.key === 'Escape' && modalId) { closeModal(); } });
-    post('loadPriority');
-    post('loadAgenda');
   </script>
 </body></html>`
 }

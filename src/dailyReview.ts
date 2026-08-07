@@ -63,6 +63,7 @@ export async function runDailyReview(context: vscode.ExtensionContext): Promise<
   const entries = trimEntries(upsertEntry(await loadEntries(context), entry))
   await saveEntries(context, entries)
   await context.globalState.update('m365.lastReviewDate', entry.date)
+  await context.globalState.update('m365.lastReviewAt', Date.now())
   return entry
 }
 
@@ -72,14 +73,15 @@ export function reviewDoneToday(context: vscode.ExtensionContext): boolean {
 }
 
 /**
- * Programador: si esta habilitado, no se ha corrido hoy y ya paso la hora
- * configurada, corre la revision. Se llama al activar y cada cierto rato.
+ * Programador de SONDEO: corre la revision cada `pollMinutes` minutos, solo en
+ * los dias y la ventana horaria configurados. Se llama en un tick frecuente
+ * (cada minuto); aqui decide si toca correr. Asi el agente sondea correos nuevos
+ * y los que ya respondiste con la frecuencia elegida.
  */
 export async function maybeRunScheduled(context: vscode.ExtensionContext, onDone: () => void): Promise<void> {
   const c = vscode.workspace.getConfiguration('m365')
   if (!c.get<boolean>('dailyReview.enabled', true)) { return }
   if (process.platform !== 'win32') { return }
-  if (reviewDoneToday(context)) { return }
 
   const now = new Date()
   const days = c.get<number[]>('dailyReview.days', [1, 2, 3, 4, 5])
@@ -90,6 +92,10 @@ export async function maybeRunScheduled(context: vscode.ExtensionContext, onDone
   const h = now.getHours()
   const inWindow = start <= end ? (h >= start && h < end) : (h >= start || h < end)
   if (!inWindow) { return }
+
+  const poll = c.get<number>('dailyReview.pollMinutes', 30)
+  const lastAt = context.globalState.get<number>('m365.lastReviewAt', 0)
+  if (Date.now() - lastAt < poll * 60 * 1000) { return }
 
   try { await runDailyReview(context); onDone() } catch { /* se reintenta al proximo tick */ }
 }

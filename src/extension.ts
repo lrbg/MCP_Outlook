@@ -46,7 +46,7 @@ export function activate(context: vscode.ExtensionContext) {
   // abierto; si a la hora configurada estaba cerrado, se pone al dia al abrir).
   const tick = () => maybeRunScheduled(context, () => { refreshDashboard(context); tree?.refresh() })
   tick()
-  reviewTimer = setInterval(tick, 30 * 60 * 1000)
+  reviewTimer = setInterval(tick, 60 * 1000)
   context.subscriptions.push({ dispose: () => { if (reviewTimer) { clearInterval(reviewTimer) } } })
 
   reg('m365.openRecipes', async () => {
