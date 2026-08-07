@@ -10,7 +10,7 @@ import { readEmailBody, sendReply, sendMail, getMe } from './outlookActions'
 import { draftReply, assistAgenda, summarizePriority, summarizeAssignments, summarizeCommits } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
-import { getGithubToken, getTeamCommits, listAllRepos, getReposStats, detectAuthors } from './github'
+import { getGithubToken, getGithubReport, detectAuthors } from './github'
 import { log, showLog } from './log'
 import { recipesDir } from './mcpProvider'
 
@@ -272,27 +272,19 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
         const untilISO = fmt(new Date(year, month + 1, 0))
         const prog = (text: string) => { if (panel) { panel.webview.postMessage({ type: 'ghProgress', text }) } }
 
-        prog('Cargando repos de la organización…')
-        const allRepos = await listAllRepos(token, org)
-        const active = allRepos.filter(r => !r.pushed || r.pushed >= sinceISO)
-        prog(`${active.length} repos activos · contando commits y PRs…`)
-        const stats = await getReposStats(token, active, sinceISO, untilISO, prog)
-        const reposOut = allRepos.map(r => ({ full: r.full, pushed: r.pushed, commits: stats[r.full]?.commits || 0, prs: stats[r.full] ? stats[r.full].prs : null }))
-        if (!authors.length) {
-          panel.webview.postMessage({ type: 'github', org, allRepos: reposOut, members: [], repoCount: 0, month })
-          return
-        }
-        const r = await vscode.window.withProgress(
+        const includePRs = !!m.includePRs
+        prog('Leyendo repos activos…')
+        const rep = await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: `GitHub ${org} · ${sinceISO}..${untilISO}`, cancellable: false },
-          (p) => getTeamCommits(token, org, authors, sinceISO, untilISO, (msg) => { p.report({ message: msg }); prog(msg) }),
+          (p) => getGithubReport(token, org, authors, sinceISO, untilISO, includePRs, (msg) => { p.report({ message: msg }); prog(msg) }),
         )
         panel.webview.postMessage({
           type: 'github', org, month,
-          allRepos: reposOut,
-          members: r.members, repoCount: r.repoCount,
+          allRepos: rep.repos, members: rep.members, repoCount: rep.repoCount,
+          note: rep.limited ? 'GitHub limitó por tasa; el conteo puede estar incompleto. Reintenta en un minuto.' : '',
         })
         try {
-          const memMsgs = r.members.map(mm => ({ author: mm.author, messages: mm.commits.map(c => c.message) }))
+          const memMsgs = rep.members.map(mm => ({ author: mm.author, messages: mm.commits.map(c => c.message) }))
           const descriptions = await summarizeCommits(memMsgs, new vscode.CancellationTokenSource().token)
           if (panel) { panel.webview.postMessage({ type: 'ghDesc', descriptions }) }
         } catch { /* sin descripcion */ }
@@ -730,6 +722,7 @@ function render(s: State): string {
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <h2>GitHub · commits del equipo</h2>
       <label class="muted" style="font-size:12px">Mes <select id="ghMonth" onchange="loadGithub()">${monthOpts}</select></label>
+      <label class="switch" style="font-size:12px"><input type="checkbox" id="ghPRs"> incluir PRs</label>
       <span style="flex:1"></span>
       <button class="sec" onclick="post('githubSignIn')">Conectar GitHub</button>
       <button class="sec" onclick="detectAuth()">Detectar autores</button>
@@ -900,7 +893,7 @@ function render(s: State): string {
       if(!list||!list.length){ box.innerHTML='<p class="muted">No se detectaron autores en el mes.</p>'; return; }
       box.innerHTML='<div class="muted" style="margin-bottom:4px">Autores detectados (clic para agregar como operador):</div>'+list.map(a=>'<span class="chip" style="cursor:pointer" title="Agregar" onclick="post(\\'addGhMember\\',{email:\\''+esc(a.login)+'\\'})">'+esc(a.login)+' ('+a.count+')</span>').join(' ');
     }
-    function loadGithub(){ document.getElementById('ghProgress').textContent='Consultando GitHub…'; document.getElementById('ghrepos').innerHTML='<p class="muted">Cargando…</p>'; document.getElementById('ghops').innerHTML='<p class="muted">Cargando…</p>'; post('loadGithub',{month:ghMonthVal()}); }
+    function loadGithub(){ document.getElementById('ghProgress').textContent='Consultando GitHub…'; document.getElementById('ghrepos').innerHTML='<p class="muted">Cargando…</p>'; document.getElementById('ghops').innerHTML='<p class="muted">Cargando…</p>'; post('loadGithub',{month:ghMonthVal(), includePRs:(document.getElementById('ghPRs')||{}).checked||false}); }
     function ghRepoFilter(v){ gh.repoFilter=(v||'').toLowerCase(); gh.repoPage=0; renderRepos(); }
     function ghOpFilter(v){ gh.opFilter=(v||'').toLowerCase(); gh.opPage=0; renderOps(); }
     function ghPage(which,d){ if(which==='repo'){gh.repoPage+=d; renderRepos();} else {gh.opPage+=d; renderOps();} }
@@ -1011,7 +1004,7 @@ function render(s: State): string {
       else if (m.type === 'perfTeam') { BRD.perf.team=m.team||[]; chipsK('perf'); renderReqsK('perf'); }
       else if (m.type === 'analysis') { const B=BRD[m.kind]; if(B){ B.analysis={}; (m.results||[]).forEach(x=>{B.analysis[x.id]=x;}); renderWLK(m.kind); if(m.error){ const el=document.getElementById(B.ids.wl); if(el) el.insertAdjacentHTML('afterbegin','<p class="muted">No se pudo analizar: '+esc(m.error)+'</p>'); } } }
       else if (m.type === 'ghProgress') { const el=document.getElementById('ghProgress'); if(el) el.textContent=m.text||''; }
-      else if (m.type === 'github') { gh.org=m.org||''; gh.err=m.error||''; gh.repoCount=m.repoCount||0; gh.repos=m.allRepos||[]; gh.members=m.members||[]; gh.desc={}; gh.repoPage=0; gh.opPage=0; const el=document.getElementById('ghProgress'); if(el) el.textContent=''; renderRepos(); renderOps(); }
+      else if (m.type === 'github') { gh.org=m.org||''; gh.err=m.error||''; gh.repoCount=m.repoCount||0; gh.repos=m.allRepos||[]; gh.members=m.members||[]; gh.desc={}; gh.repoPage=0; gh.opPage=0; const el=document.getElementById('ghProgress'); if(el) el.textContent=m.note||''; renderRepos(); renderOps(); }
       else if (m.type === 'ghDesc') { (m.descriptions||[]).forEach(x=>{gh.desc[x.author]=x.desc;}); gh.members.forEach(mm=>{ if(gh.desc[mm.author]===undefined) gh.desc[mm.author]=''; }); renderOps(); }
       else if (m.type === 'ghTeam') { gh.team=m.team||[]; ghChips(); }
       else if (m.type === 'ghAuthors') { renderAuthors(m.authors, m.error); }

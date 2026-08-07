@@ -192,6 +192,67 @@ async function pool<T>(items: T[], limit: number, fn: (t: T, i: number) => Promi
   await Promise.all(workers)
 }
 
+let limited = false
+/** Commits (hasta 100) de un repo en el rango, TODOS los autores. */
+async function repoAllCommits(token: string, owner: string, name: string, sinceISO: string, untilISO: string): Promise<any[]> {
+  if (limited) { return [] }
+  const url = `https://api.github.com/repos/${owner}/${name}/commits?since=${sinceISO}T00:00:00Z&until=${untilISO}T23:59:59Z&per_page=100`
+  const { status, json } = await gh(url, token)
+  if (status === 403) { limited = true; return [] }
+  if (status === 409 || status === 404) { return [] }
+  return Array.isArray(json) ? json : []
+}
+
+/**
+ * Reporte en UNA sola pasada por los repos activos (evita el 403 por exceso):
+ * por repo cuenta commits (y PRs si includePRs) y reparte los commits por autor.
+ */
+export async function getGithubReport(
+  token: string, org: string, authors: string[], sinceISO: string, untilISO: string,
+  includePRs: boolean, onProgress?: (m: string) => void,
+): Promise<{ repoCount: number; repos: any[]; members: MemberResult[]; limited: boolean }> {
+  limited = false
+  prSearchBlocked = false
+  log(`== GitHub report: org=${org} operadores=${authors.length} ${sinceISO}..${untilISO} PRs=${includePRs} ==`)
+  const active = await listActiveRepos(token, org, sinceISO)
+  onProgress?.(`${active.length} repos activos · leyendo commits…`)
+  const authSet = new Map<string, string>() // lower -> original
+  authors.forEach(a => authSet.set(a.toLowerCase(), a))
+  const memberMap: Record<string, Commit[]> = {}
+  authors.forEach(a => { memberMap[a] = [] })
+  const repos: any[] = []
+  let done = 0
+  let grand = 0
+  await pool(active, CONCURRENCY, async (r) => {
+    const raw = await repoAllCommits(token, r.owner, r.name, sinceISO, untilISO)
+    for (const it of raw) {
+      const login = String(it.author?.login || it.commit?.author?.name || '')
+      const orig = authSet.get(login.toLowerCase())
+      if (orig) {
+        memberMap[orig].push({
+          repo: `${r.owner}/${r.name}`,
+          message: String(it.commit?.message || '').split('\n')[0].slice(0, 160),
+          date: it.commit?.author?.date || it.commit?.committer?.date || '',
+          sha: (it.sha || '').slice(0, 7), url: it.html_url || '',
+        })
+      }
+    }
+    grand += raw.length
+    let prs: number | null = null
+    if (includePRs) { try { prs = await repoPrCount(token, r.owner, r.name, sinceISO, untilISO) } catch { prs = null } }
+    repos.push({ full: `${r.owner}/${r.name}`, pushed: (r as any).pushed || '', commits: raw.length, prs })
+    done++
+    if (done % 10 === 0) { onProgress?.(`${done}/${active.length} repos · ${grand} commits`) }
+  })
+  repos.sort((a, b) => (b.commits || 0) - (a.commits || 0))
+  const members: MemberResult[] = authors.map(a => {
+    const cs = memberMap[a].sort((x, y) => String(y.date).localeCompare(String(x.date)))
+    return { author: a, commits: cs }
+  })
+  log(`== GitHub report: listo · ${grand} commits, limitado=${limited} ==`)
+  return { repoCount: active.length, repos, members, limited }
+}
+
 /** Commits del equipo: repos activos x autor, con registro y progreso. */
 export async function getTeamCommits(
   token: string, org: string, authors: string[], sinceISO: string, untilISO?: string,
