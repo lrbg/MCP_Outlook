@@ -36,12 +36,17 @@ function field(body: string, label: string): string {
   return m ? m[1].trim().replace(/\s+/g, ' ') : ''
 }
 
-/** Lee las solicitudes de datos sinteticos de los ultimos `days` dias. */
-export function getDataRequests(days = 30, max = 100): DataRequest[] {
+/**
+ * Lee las solicitudes cuyo asunto contiene `keyword` (ej. "datos sint" o
+ * "performance") de los ultimos `days` dias, y parsea sus campos.
+ */
+export function getRequests(keyword: string, days = 45, max = 150): DataRequest[] {
   if (!isWindows) { throw new Error('Requiere Windows con Outlook de escritorio.') }
   const d = Math.min(Math.max(Math.ceil(days), 1), 120)
+  const kw = norm(keyword)
   const script = `
 ${PS_B64_FN}
+$kw = $env:KW.ToLower()
 $ol = New-Object -ComObject Outlook.Application
 $ns = $ol.GetNamespace("MAPI")
 $folder = $ns.GetDefaultFolder(6)
@@ -52,11 +57,11 @@ $recent = $items.Restrict("[ReceivedTime] >= '$cut'")
 $result = @()
 $seen = 0
 foreach ($item in $recent) {
-  if ($seen -ge 1000) { break }
+  if ($seen -ge 1500) { break }
   $seen++
   try {
     $subj = [string]$item.Subject
-    if ($subj -match 'Datos Sint') {
+    if ($subj.ToLower().Contains($kw)) {
       $body = $item.Body; if ($body.Length -gt 2500) { $body = $body.Substring(0, 2500) }
       $result += [PSCustomObject]@{
         id = $item.EntryID
@@ -69,17 +74,24 @@ foreach ($item in $recent) {
 }
 if ($result.Count -eq 0) { Write-Output "[]" } else { $result | ConvertTo-Json -Depth 2 }
 `
-  return parsePsArray(ps(script)).map(r => {
+  return parsePsArrayEnv(script, { KW: keyword }).map((r: any) => {
     const subject = dec(r.s)
     const body = dec(r.b)
     return {
-      id: r.id,
-      received: r.received,
-      subject,
+      id: r.id, received: r.received, subject,
       solicitante: field(body, 'Solicitante'),
       equipo: field(body, 'Equipo'),
       proyecto: field(body, 'Proyecto'),
       fecha: field(body, 'Fecha\\s+solic\\w*'),
     }
-  }).filter(x => norm(x.subject).includes('datos sint')) as DataRequest[]
+  }).filter((x: DataRequest) => norm(x.subject).includes(kw)) as DataRequest[]
+}
+
+function parsePsArrayEnv(script: string, env: Record<string, string>): any[] {
+  const full = `$ProgressPreference = 'SilentlyContinue'\n$ErrorActionPreference = 'Stop'\n${script}`
+  const encoded = Buffer.from(full, 'utf16le').toString('base64')
+  const out = execSync(`powershell -NonInteractive -EncodedCommand ${encoded}`, {
+    encoding: 'utf8', timeout: 120000, env: { ...process.env, ...env },
+  }).trim()
+  return parsePsArray(out)
 }
