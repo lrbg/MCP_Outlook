@@ -7,7 +7,7 @@ import { loadAssignments, assign as assignReq, setStatus as setReqStatus, unassi
 import { classifyPriority, labelText } from './priorityClassify'
 import { loadStatus, setStatus, clearStatus } from './priorityState'
 import { readEmailBody, sendReply, sendMail, getMe } from './outlookActions'
-import { draftReply, assistAgenda, summarizePriority, summarizeAssignments, summarizeCommits } from './copilot'
+import { draftReply, assistAgenda, summarizePriority, summarizeAssignments, summarizeCommits, dedupeRequests } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
 import { getGithubToken, getTeamReport, getRepoStatsFor, listAllRepos, detectAuthors } from './github'
@@ -45,10 +45,29 @@ async function postRequests(context: vscode.ExtensionContext, k: string): Promis
   try {
     const reqs = getRequests(K.keyword, 45, 150)
     const map = await loadAssignments(context, K.file)
-    panel.webview.postMessage({ type: K.reqMsg, items: reqs.map(r => ({ ...r, assignment: map[r.id] || null })), team: c.get<string[]>(K.teamCfg, []) })
+    const items = groupRequests(reqs, map)
+    panel.webview.postMessage({ type: K.reqMsg, items, team: c.get<string[]>(K.teamCfg, []) })
   } catch (e: any) {
     panel.webview.postMessage({ type: K.reqMsg, error: e?.message || String(e) })
   }
+}
+
+/** Agrupa solicitudes del mismo hilo (ConversationID) en una sola; dedup de reminders/RE. */
+function groupRequests(reqs: any[], map: Record<string, any>): any[] {
+  const groups = new Map<string, any[]>()
+  for (const r of reqs) {
+    const key = r.conv || r.id
+    if (!groups.has(key)) { groups.set(key, []) }
+    groups.get(key)!.push(r)
+  }
+  const items = [...groups.entries()].map(([key, arr]) => {
+    const withData = arr.filter(x => x.solicitante || x.proyecto)
+    const rep = (withData.length ? withData : arr).sort((a, b) => String(b.received).localeCompare(String(a.received)))[0]
+    const assignment = map[key] || arr.map(x => map[x.id]).find(Boolean) || null
+    return { ...rep, id: key, viewId: rep.id, count: arr.length, assignment }
+  })
+  items.sort((a, b) => String(b.received).localeCompare(String(a.received)))
+  return items
 }
 
 async function doAssign(context: vscode.ExtensionContext, k: string, m: any): Promise<void> {
@@ -93,6 +112,25 @@ async function removeTeamMember(context: vscode.ExtensionContext, k: string, ema
   if (panel) { panel.webview.postMessage({ type: K.teamMsg, team: c.get<string[]>(K.teamCfg, []) }) }
 }
 
+/** Detecta con Copilot solicitudes que son la misma (aunque esten en hilos distintos). */
+async function runDedupe(context: vscode.ExtensionContext, k: string): Promise<void> {
+  if (!panel) { return }
+  const K = KIND[k]
+  try {
+    const reqs = getRequests(K.keyword, 60, 200)
+    const map = await loadAssignments(context, K.file)
+    const grouped = groupRequests(reqs, map)
+    const groups = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Copilot: detectando solicitudes duplicadas…' },
+      () => dedupeRequests(grouped, new vscode.CancellationTokenSource().token),
+    )
+    panel.webview.postMessage({ type: 'dups', kind: k, groups })
+  } catch (e: any) {
+    log(`runDedupe error: ${e?.message || e}`)
+    panel.webview.postMessage({ type: 'dups', kind: k, groups: [], error: e?.message || String(e) })
+  }
+}
+
 /** Analiza (con Copilot, leyendo el hilo) las asignaciones de un tablero. */
 async function runAnalyze(context: vscode.ExtensionContext, k: string): Promise<void> {
   if (!panel) { return }
@@ -100,14 +138,16 @@ async function runAnalyze(context: vscode.ExtensionContext, k: string): Promise<
   try {
     const reqs = getRequests(K.keyword, 60, 200)
     const map = await loadAssignments(context, K.file)
-    const assigned = reqs.filter(r => map[r.id]).map(r => ({
-      id: r.id, proyecto: r.proyecto, solicitante: r.solicitante, member: map[r.id].member, status: map[r.id].status,
+    const grouped = groupRequests(reqs, map)
+    const assigned = grouped.filter(it => it.assignment).map(it => ({
+      id: it.id, viewId: it.viewId, proyecto: it.proyecto, solicitante: it.solicitante,
+      member: it.assignment.member, status: it.assignment.status,
     }))
     if (!assigned.length) { panel.webview.postMessage({ type: 'analysis', kind: k, results: [] }); return }
-    const digests = getThreadDigests(assigned.map(a => a.id), 60)
+    const digests = getThreadDigests(assigned.map(a => a.viewId), 60)
     const dmap: Record<string, string> = {}
     digests.forEach(d => { dmap[d.id] = d.digest })
-    const items = assigned.map(a => ({ ...a, digest: dmap[a.id] || '' }))
+    const items = assigned.map(a => ({ id: a.id, proyecto: a.proyecto, solicitante: a.solicitante, member: a.member, status: a.status, digest: dmap[a.viewId] || '' }))
     const results = await summarizeAssignments(items, new vscode.CancellationTokenSource().token)
     panel.webview.postMessage({ type: 'analysis', kind: k, results })
   } catch (e: any) {
@@ -217,6 +257,8 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
     case 'removePerfMember': { await removeTeamMember(context, 'perf', m.email); return }
     case 'analyzeRequests': { await runAnalyze(context, 'data'); return }
     case 'analyzePerf': { await runAnalyze(context, 'perf'); return }
+    case 'dedupeData': { await runDedupe(context, 'data'); return }
+    case 'dedupePerf': { await runDedupe(context, 'perf'); return }
     case 'setGithubOrg': { await c.update('githubOrg', String(m.org || '').trim(), G); return }
     case 'addGhMember': {
       const e = String(m.email || '').trim()
@@ -696,6 +738,7 @@ function render(s: State): string {
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <h2>Solicitudes de Datos Sintéticos</h2>
       <span style="flex:1"></span>
+      <button class="sec" onclick="post('dedupeData')">Detectar duplicados (IA)</button>
       <button class="sec" onclick="loadReqsK('data')">Actualizar</button>
     </div>
     <div class="senderbox" style="margin-top:10px">
@@ -721,6 +764,7 @@ function render(s: State): string {
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <h2>Solicitudes de Performance</h2>
       <span style="flex:1"></span>
+      <button class="sec" onclick="post('dedupePerf')">Detectar duplicados (IA)</button>
       <button class="sec" onclick="loadReqsK('perf')">Actualizar</button>
     </div>
     <div class="senderbox" style="margin-top:10px">
@@ -983,12 +1027,14 @@ function render(s: State): string {
           '<div class="actions">'+reqSelectK(k,r)+
           (a.status==='finalizada'?'<button class="sec" onclick="statusK(\\''+k+'\\',\\''+esc(r.id)+'\\',\\'seguimiento\\')">Reabrir</button>':'<button class="sec" onclick="statusK(\\''+k+'\\',\\''+esc(r.id)+'\\',\\'finalizada\\')">Marcar finalizada</button>')+
           '<button class="sec" onclick="unassignK(\\''+k+'\\',\\''+esc(r.id)+'\\')">Quitar</button>'+
-          '<button class="sec" onclick="openEmail(\\''+esc(r.id)+'\\')">Ver</button></div>';
-        } else { row='<div class="actions">'+reqSelectK(k,r)+'<button class="sec" onclick="openEmail(\\''+esc(r.id)+'\\')">Ver</button></div>'; }
-        return '<div class="mailrow"><div class="top"><span class="from">'+esc(r.solicitante||'(sin solicitante)')+'</span><span class="muted">'+esc(r.received)+'</span></div>'+
+          '<button class="sec" onclick="openEmail(\\''+esc(r.viewId||r.id)+'\\')">Ver</button></div>';
+        } else { row='<div class="actions">'+reqSelectK(k,r)+'<button class="sec" onclick="openEmail(\\''+esc(r.viewId||r.id)+'\\')">Ver</button></div>'; }
+        const cnt = (r.count>1)? ' <span class="lab lab-informative">'+r.count+' correos</span>' : '';
+        const dup = r.dupOf? '<div class="wreq" style="color:#d9a017">Posible duplicado de: '+esc(r.dupOf)+'</div>' : '';
+        return '<div class="mailrow"><div class="top"><span class="from">'+esc(r.solicitante||'(sin solicitante)')+cnt+'</span><span class="muted">'+esc(r.received)+'</span></div>'+
           '<div class="subj">'+esc(r.proyecto||r.subject||'')+'</div>'+
           '<div class="muted rec">Equipo: '+esc(r.equipo||'—')+' · Fecha solicitada: '+esc(r.fecha||'—')+'</div>'+
-          row+'</div>';
+          dup+row+'</div>';
       }).join('');
       if(pagerEl){ pagerEl.innerHTML = pages>1
         ? ('<button class="sec" onclick="pageReqK(\\''+k+'\\',-1)"'+(B.page===0?' disabled':'')+'>‹ Anterior</button><span class="muted">'+(B.page+1)+' / '+pages+' · '+B.reqs.length+'</span><button class="sec" onclick="pageReqK(\\''+k+'\\',1)"'+(B.page>=pages-1?' disabled':'')+'>Siguiente ›</button>')
@@ -1034,6 +1080,7 @@ function render(s: State): string {
       else if (m.type === 'team') { BRD.data.team=m.team||[]; chipsK('data'); renderReqsK('data'); }
       else if (m.type === 'perfRequests') { if(m.error){ document.getElementById('perfRequests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { BRD.perf.reqs=m.items||[]; BRD.perf.page=0; if(m.team)BRD.perf.team=m.team; chipsK('perf'); renderReqsK('perf'); } }
       else if (m.type === 'perfTeam') { BRD.perf.team=m.team||[]; chipsK('perf'); renderReqsK('perf'); }
+      else if (m.type === 'dups') { const B=BRD[m.kind]; if(B){ (m.groups||[]).forEach(g=>{ if(!Array.isArray(g)||g.length<2)return; const primary=B.reqs.find(x=>x.id===g[0]); const label=primary?(primary.proyecto||primary.solicitante||'otra solicitud'):'otra solicitud'; g.slice(1).forEach(id=>{ const it=B.reqs.find(x=>x.id===id); if(it) it.dupOf=label; }); }); renderReqsK(m.kind); } }
       else if (m.type === 'analysis') { const B=BRD[m.kind]; if(B){ B.analysis={}; (m.results||[]).forEach(x=>{B.analysis[x.id]=x;}); renderWLK(m.kind); if(m.error){ const el=document.getElementById(B.ids.wl); if(el) el.insertAdjacentHTML('afterbegin','<p class="muted">No se pudo analizar: '+esc(m.error)+'</p>'); } } }
       else if (m.type === 'ghProgress') { const el=document.getElementById('ghProgress'); if(el) el.textContent=m.text||''; }
       else if (m.type === 'github') { gh.org=m.org||''; gh.err=m.error||''; gh.repos=m.allRepos||[]; gh.members=m.members||[]; gh.desc={}; gh.stats={}; gh.repoPage=0; gh.opPage=0; const el=document.getElementById('ghProgress'); if(el) el.textContent=m.note||''; renderRepos(); renderOps(); }

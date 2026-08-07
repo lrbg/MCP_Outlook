@@ -10,6 +10,7 @@ export const isWindows = process.platform === 'win32'
 
 export interface DataRequest {
   id: string
+  conv: string
   received: string
   subject: string
   solicitante: string
@@ -122,6 +123,7 @@ foreach ($item in $recent) {
       $body = $item.Body; if ($body.Length -gt 2500) { $body = $body.Substring(0, 2500) }
       $result += [PSCustomObject]@{
         id = $item.EntryID
+        conv = [string]$item.ConversationID
         received = $item.ReceivedTime.ToString("yyyy-MM-dd HH:mm")
         s = B64($subj); b = B64($body)
       }
@@ -135,7 +137,7 @@ if ($result.Count -eq 0) { Write-Output "[]" } else { $result | ConvertTo-Json -
     const subject = dec(r.s)
     const body = dec(r.b)
     return {
-      id: r.id, received: r.received, subject,
+      id: r.id, conv: r.conv || '', received: r.received, subject,
       solicitante: field(body, 'Solicitante'),
       equipo: field(body, 'Equipo'),
       proyecto: field(body, 'Proyecto'),

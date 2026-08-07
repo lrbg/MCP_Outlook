@@ -111,6 +111,22 @@ export async function summarizeCommits(members: any[], token: vscode.Cancellatio
   try { const a = JSON.parse(text); return Array.isArray(a) ? a : [] } catch { return [] }
 }
 
+/** Agrupa solicitudes que son la MISMA (mismo proyecto/solicitante/tema). Devuelve grupos de ids. */
+export async function dedupeRequests(items: any[], token: vscode.CancellationToken): Promise<string[][]> {
+  if (items.length < 2) { return [] }
+  const model = await pickModel()
+  const compact = items.map(i => ({ id: i.id, solicitante: i.solicitante || '', equipo: i.equipo || '', proyecto: i.proyecto || '', asunto: i.subject || '' }))
+  const prompt =
+    'Te doy solicitudes de datos sinteticos. Agrupa las que son LA MISMA solicitud (mismo proyecto/solicitante/tema, aunque el texto o el asunto varie). ' +
+    'Devuelve SOLO un arreglo JSON de grupos; cada grupo es un arreglo de "id" que son la misma solicitud. Incluye unicamente grupos con 2 o mas ids. No inventes. Nada fuera del JSON.\n\n' +
+    '```json\n' + JSON.stringify(compact) + '\n```'
+  const resp = await model.sendRequest([vscode.LanguageModelChatMessage.User(prompt)], {}, token)
+  let text = ''
+  for await (const chunk of resp.text) { text += chunk }
+  text = text.trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim()
+  try { const a = JSON.parse(text); return Array.isArray(a) ? a.filter(g => Array.isArray(g) && g.length >= 2) : [] } catch { return [] }
+}
+
 /** Redacta un borrador de respuesta al correo dado, para que el usuario lo edite. */
 export async function draftReply(email: EmailBody, token: vscode.CancellationToken, instruction = ''): Promise<string> {
   const model = await pickModel()
