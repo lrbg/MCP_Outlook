@@ -248,14 +248,13 @@ async function repoAllCommits(token: string, owner: string, name: string, sinceI
  * Reporte en UNA sola pasada por los repos activos (evita el 403 por exceso):
  * por repo cuenta commits (y PRs si includePRs) y reparte los commits por autor.
  */
-export async function getGithubReport(
+/** Solo operadores (via Search API por autor). Ligero: ~1 peticion por operador. */
+export async function getTeamReport(
   token: string, org: string, authors: string[], sinceISO: string, untilISO: string,
-  includePRs: boolean, onProgress?: (m: string) => void,
-): Promise<{ repoCount: number; repos: any[]; members: MemberResult[]; limited: boolean }> {
-  prSearchBlocked = false
-  log(`== GitHub report (search): org=${org} operadores=${authors.length} ${sinceISO}..${untilISO} PRs=${includePRs} ==`)
+  onProgress?: (m: string) => void,
+): Promise<{ members: MemberResult[] }> {
+  log(`== GitHub operadores (search): org=${org} n=${authors.length} ${sinceISO}..${untilISO} ==`)
   const members: MemberResult[] = []
-  const repoCounts: Record<string, number> = {}
   let done = 0
   let grand = 0
   const validLogin = new RegExp('^[A-Za-z0-9-]+(_[A-Za-z0-9-]+)?$')
@@ -263,8 +262,7 @@ export async function getGithubReport(
     let cs: Commit[] = []
     let err = ''
     if (!validLogin.test(a)) {
-      err = 'Usuario de GitHub inválido (sin puntos ni correo). Usa el login exacto, p. ej. el que sale en "Detectar autores".'
-      log(`autor ${a}: invalido (se omite)`)
+      err = 'Usuario de GitHub inválido (sin puntos ni correo). Usa el login exacto, p. ej. el de "Detectar autores".'
       members.push({ author: a, commits: [], error: err })
       done++; onProgress?.(`${done}/${authors.length} operadores · ${grand} commits`)
       continue
@@ -272,23 +270,27 @@ export async function getGithubReport(
     try { cs = await searchCommitsByAuthor(token, org, a, sinceISO, untilISO) }
     catch (e: any) { err = e?.message || String(e); log(`autor ${a}: ${err}`) }
     cs.sort((x, y) => String(y.date).localeCompare(String(x.date)))
-    cs.forEach(c => { if (c.repo) { repoCounts[c.repo] = (repoCounts[c.repo] || 0) + 1 } })
     grand += cs.length
     members.push({ author: a, commits: cs, error: (err && !cs.length) ? err : undefined })
     done++
     onProgress?.(`${done}/${authors.length} operadores · ${grand} commits`)
     log(`autor ${a}: ${cs.length} commits`)
   }
-  const repos: any[] = Object.keys(repoCounts).map(full => ({ full, pushed: '', commits: repoCounts[full], prs: null as number | null }))
-  if (includePRs) {
-    await pool(repos, CONCURRENCY, async (r) => {
-      const [owner, name] = r.full.split('/')
-      try { r.prs = await repoPrCount(token, owner, name, sinceISO, untilISO) } catch { r.prs = null }
-    })
-  }
-  repos.sort((a, b) => (b.commits || 0) - (a.commits || 0))
-  log(`== GitHub report: listo · ${grand} commits en ${repos.length} repos ==`)
-  return { repoCount: repos.length, repos, members, limited: false }
+  return { members }
+}
+
+/** Commits (y PRs si includePRs) para un grupo de repos (una pagina). Ligero. */
+export async function getRepoStatsFor(token: string, fulls: string[], sinceISO: string, untilISO: string, includePRs: boolean): Promise<Record<string, RepoStat>> {
+  prSearchBlocked = false
+  const map: Record<string, RepoStat> = {}
+  await pool(fulls, 3, async (full) => {
+    const [owner, name] = full.split('/')
+    let commits = 0; let prs: number | null = null
+    try { commits = await repoCommitCount(token, owner, name, sinceISO, untilISO) } catch (e: any) { log(`stats ${full}: ${e?.message || e}`) }
+    if (includePRs) { try { prs = await repoPrCount(token, owner, name, sinceISO, untilISO) } catch { prs = null } }
+    map[full] = { commits, prs }
+  })
+  return map
 }
 
 /** Commits del equipo: repos activos x autor, con registro y progreso. */
