@@ -16,7 +16,22 @@ export interface RepoStat { commits: number; prs: number | null }
 
 const REQ_TIMEOUT_MS = 20000
 const MAX_REPOS = 150
-const CONCURRENCY = 6
+const CONCURRENCY = 3
+
+/** Interpreta un 403: distingue SSO/SAML, limite de tasa y permisos. */
+function msg403(headers: Headers, json: any): string {
+  const sso = headers.get('x-github-sso') || ''
+  if (/required/i.test(sso)) {
+    const m = sso.match(/url=([^;,\s]+)/)
+    return 'Tu sesion de GitHub NO esta autorizada para esta organizacion (SSO/SAML). Autorizala aqui y reintenta: ' + (m ? m[1] : `https://github.com/orgs/<org>/sso`)
+  }
+  const remaining = headers.get('x-ratelimit-remaining')
+  const retry = headers.get('retry-after')
+  if (remaining === '0' || retry) { return `Limite de tasa de GitHub. Espera ${retry ? retry + 's' : '~1 min'} y reintenta.` }
+  const body = String(json?.message || '')
+  if (/secondary rate/i.test(body)) { return 'Limite secundario de GitHub (muchas peticiones). Espera ~1 min y reintenta (o baja el rango).' }
+  return body || 'GitHub 403.'
+}
 
 export async function getGithubToken(interactive = false): Promise<string> {
   try {
@@ -25,7 +40,7 @@ export async function getGithubToken(interactive = false): Promise<string> {
   } catch (e: any) { log(`getGithubToken error: ${e?.message || e}`); return '' }
 }
 
-async function gh(url: string, token: string): Promise<{ status: number; json: any }> {
+async function gh(url: string, token: string): Promise<{ status: number; json: any; headers: Headers }> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), REQ_TIMEOUT_MS)
   try {
@@ -35,7 +50,7 @@ async function gh(url: string, token: string): Promise<{ status: number; json: a
     })
     let json: any = null
     try { json = await res.json() } catch { /* vacio */ }
-    return { status: res.status, json }
+    return { status: res.status, json, headers: res.headers }
   } catch (e: any) {
     if (e?.name === 'AbortError') { throw new Error('GitHub no respondio a tiempo (timeout).') }
     throw e
@@ -134,9 +149,9 @@ export async function listActiveRepos(token: string, org: string, sinceISO: stri
   const sinceMs = Date.parse(sinceISO)
   for (let page = 1; page <= 6 && out.length < MAX_REPOS; page++) {
     log(`repos: pidiendo pagina ${page} de ${org}…`)
-    const { status, json } = await gh(`https://api.github.com/orgs/${encodeURIComponent(org)}/repos?per_page=100&sort=pushed&direction=desc&page=${page}`, token)
+    const { status, json, headers } = await gh(`https://api.github.com/orgs/${encodeURIComponent(org)}/repos?per_page=100&sort=pushed&direction=desc&page=${page}`, token)
     if (status === 404) { throw new Error(`No encuentro la organizacion "${org}" o sin acceso. Usa el login exacto (el de la URL github.com/ESTO).`) }
-    if (status === 403) { throw new Error('GitHub 403 (permisos/limite). Reconecta concediendo acceso a la organizacion.') }
+    if (status === 403) { throw new Error(msg403(headers, json)) }
     if (status === 401) { throw new Error('Sesion de GitHub invalida (401). Vuelve a conectar.') }
     if (!Array.isArray(json) || json.length === 0) { log(`repos: pagina ${page} vacia (status ${status})`); break }
     let stop = false
@@ -156,9 +171,10 @@ export async function listActiveRepos(token: string, org: string, sinceISO: stri
 export async function listAllRepos(token: string, org: string, cap = 400): Promise<RepoInfo[]> {
   const out: RepoInfo[] = []
   for (let page = 1; page <= 8 && out.length < cap; page++) {
-    const { status, json } = await gh(`https://api.github.com/orgs/${encodeURIComponent(org)}/repos?per_page=100&sort=pushed&direction=desc&page=${page}`, token)
+    const { status, json, headers } = await gh(`https://api.github.com/orgs/${encodeURIComponent(org)}/repos?per_page=100&sort=pushed&direction=desc&page=${page}`, token)
     if (status === 404) { throw new Error(`No encuentro la organizacion "${org}" o sin acceso.`) }
-    if (status === 403 || status === 401) { throw new Error(`GitHub ${status}: revisa permisos/reconecta.`) }
+    if (status === 401) { throw new Error('Sesion de GitHub invalida (401). Vuelve a conectar.') }
+    if (status === 403) { throw new Error(msg403(headers, json)) }
     if (!Array.isArray(json) || json.length === 0) { break }
     for (const r of json) { out.push({ owner: r.owner?.login || org, name: r.name, full: r.full_name || `${org}/${r.name}`, pushed: (r.pushed_at || '').slice(0, 10) }) }
     if (json.length < 100) { break }
