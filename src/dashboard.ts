@@ -10,7 +10,7 @@ import { readEmailBody, sendReply, sendMail, getMe } from './outlookActions'
 import { draftReply, assistAgenda, summarizePriority, summarizeAssignments } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
-import { getGithubToken, searchCommits } from './github'
+import { getGithubToken, getTeamCommits } from './github'
 import { recipesDir } from './mcpProvider'
 
 let panel: vscode.WebviewPanel | undefined
@@ -237,13 +237,13 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
         if (!org) { panel.webview.postMessage({ type: 'github', error: 'Escribe tu organización de GitHub arriba.' }); return }
         const token = await getGithubToken(false)
         if (!token) { panel.webview.postMessage({ type: 'github', needAuth: true, error: 'Conecta tu cuenta de GitHub.' }); return }
+        if (!authors.length) { panel.webview.postMessage({ type: 'github', org, members: [], repoCount: 0 }); return }
         const since = new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10)
-        const members: any[] = []
-        for (const a of authors) {
-          try { members.push({ author: a, commits: await searchCommits(token, org, a, since) }) }
-          catch (e: any) { members.push({ author: a, commits: [], error: e?.message || String(e) }) }
-        }
-        panel.webview.postMessage({ type: 'github', org, members })
+        const r = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: `GitHub: revisando repos de ${org}…` },
+          () => getTeamCommits(token, org, authors, since),
+        )
+        panel.webview.postMessage({ type: 'github', org, members: r.members, repoCount: r.repoCount })
       } catch (e: any) {
         panel.webview.postMessage({ type: 'github', error: e?.message || String(e) })
       }
@@ -817,7 +817,7 @@ function render(s: State): string {
     function mergeSummaries(arr){ const by={}; (arr||[]).forEach(s=>{by[s.id]=s;}); lists.prio.data.forEach(x=>{ const s=by[x.id]; if(s){ x.resumen=s.resumen||''; x.meeting=s.reunion||{es:false}; x.respuesta=s.respuesta||''; } else { x.resumen=x.resumen||''; } }); renderList('prio'); }
 
     let ghRange = 30;
-    const ghData = { org: '', members: [], team: ${JSON.stringify(s.githubTeam)}, err: '' };
+    const ghData = { org: '', members: [], team: ${JSON.stringify(s.githubTeam)}, err: '', repoCount: 0 };
     function setGhRange(r){ ghRange=r; document.querySelectorAll('#ghseg button').forEach(b=>b.classList.toggle('active',(+b.dataset.r)===r)); renderGithub(); }
     function addGh(){ const el=document.getElementById('newGh'); const v=(el.value||'').trim(); if(v){ post('addGhMember',{email:v}); el.value=''; } }
     function rmGh(m){ post('removeGhMember',{email:m}); }
@@ -829,9 +829,10 @@ function render(s: State): string {
       if(ghData.err){ box.innerHTML='<p class="muted">'+esc(ghData.err)+'</p>'; return; }
       if(!ghData.members.length){ box.innerHTML='<p class="muted">Agrega operadores y presiona Actualizar.</p>'; return; }
       const label = ghRange===1?'hoy':(ghRange===7?'esta semana':'este mes');
+      const head='<div class="muted" style="margin-bottom:8px">'+(ghData.repoCount||0)+' repos activos en '+esc(ghData.org||'')+' (ultimo mes)</div>';
       const max=Math.max(1, ...ghData.members.map(mm=>(mm.commits||[]).filter(c=>ghInRange(c.date)).length));
-      box.innerHTML=ghData.members.map(mm=>{
-        if(mm.error){ return '<div class="wrow"><div class="top"><span class="from">'+esc(mm.author)+'</span><span class="muted">error</span></div><div class="muted wreq">'+esc(mm.error)+'</div></div>'; }
+      box.innerHTML=head+ghData.members.map(mm=>{
+        if(mm.error && !(mm.commits&&mm.commits.length)){ return '<div class="wrow"><div class="top"><span class="from">'+esc(mm.author)+'</span><span class="muted">error</span></div><div class="muted wreq">'+esc(mm.error)+'</div></div>'; }
         const cs=(mm.commits||[]).filter(c=>ghInRange(c.date));
         const byRepo={}; cs.forEach(c=>{ (byRepo[c.repo]=byRepo[c.repo]||[]).push(c); });
         const repos=Object.keys(byRepo).sort();
@@ -918,7 +919,7 @@ function render(s: State): string {
       else if (m.type === 'perfRequests') { if(m.error){ document.getElementById('perfRequests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { BRD.perf.reqs=m.items||[]; BRD.perf.page=0; if(m.team)BRD.perf.team=m.team; chipsK('perf'); renderReqsK('perf'); } }
       else if (m.type === 'perfTeam') { BRD.perf.team=m.team||[]; chipsK('perf'); renderReqsK('perf'); }
       else if (m.type === 'analysis') { const B=BRD[m.kind]; if(B){ B.analysis={}; (m.results||[]).forEach(x=>{B.analysis[x.id]=x;}); renderWLK(m.kind); if(m.error){ const el=document.getElementById(B.ids.wl); if(el) el.insertAdjacentHTML('afterbegin','<p class="muted">No se pudo analizar: '+esc(m.error)+'</p>'); } } }
-      else if (m.type === 'github') { ghData.members=m.members||[]; ghData.org=m.org||''; ghData.err=m.error||''; renderGithub(); }
+      else if (m.type === 'github') { ghData.members=m.members||[]; ghData.org=m.org||''; ghData.err=m.error||''; ghData.repoCount=m.repoCount||0; renderGithub(); }
       else if (m.type === 'ghTeam') { ghData.team=m.team||[]; ghChips(); }
       else if (m.type === 'ghAuthed') { loadGithub(); }
       else if (m.type === 'replySent') { closeModal(); setTimeout(loadInbox, 1500); }
