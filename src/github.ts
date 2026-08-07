@@ -208,6 +208,20 @@ async function pool<T>(items: T[], limit: number, fn: (t: T, i: number) => Promi
   await Promise.all(workers)
 }
 
+/** Commits de un autor (login) en la org via Search API (usa cuota de busqueda, no la del core). */
+async function searchCommitsByAuthor(token: string, org: string, login: string, sinceISO: string, untilISO: string): Promise<Commit[]> {
+  const q = `org:${org} author:${login} author-date:${sinceISO}..${untilISO}`
+  const { status, json, headers } = await gh(`https://api.github.com/search/commits?q=${encodeURIComponent(q)}&per_page=100&sort=author-date&order=desc`, token)
+  if (status === 403) { throw new Error(msg403(headers, json)) }
+  if (status !== 200 || !Array.isArray(json?.items)) { return [] }
+  return json.items.map((it: any) => ({
+    repo: it.repository?.full_name || it.repository?.name || '',
+    message: String(it.commit?.message || '').split('\n')[0].slice(0, 160),
+    date: it.commit?.author?.date || it.commit?.committer?.date || '',
+    sha: (it.sha || '').slice(0, 7), url: it.html_url || '',
+  }))
+}
+
 let limited = false
 /** Commits (hasta 100) de un repo en el rango, TODOS los autores. */
 async function repoAllCommits(token: string, owner: string, name: string, sinceISO: string, untilISO: string): Promise<any[]> {
@@ -227,46 +241,35 @@ export async function getGithubReport(
   token: string, org: string, authors: string[], sinceISO: string, untilISO: string,
   includePRs: boolean, onProgress?: (m: string) => void,
 ): Promise<{ repoCount: number; repos: any[]; members: MemberResult[]; limited: boolean }> {
-  limited = false
   prSearchBlocked = false
-  log(`== GitHub report: org=${org} operadores=${authors.length} ${sinceISO}..${untilISO} PRs=${includePRs} ==`)
-  const active = await listActiveRepos(token, org, sinceISO)
-  onProgress?.(`${active.length} repos activos · leyendo commits…`)
-  const authSet = new Map<string, string>() // lower -> original
-  authors.forEach(a => authSet.set(a.toLowerCase(), a))
-  const memberMap: Record<string, Commit[]> = {}
-  authors.forEach(a => { memberMap[a] = [] })
-  const repos: any[] = []
+  log(`== GitHub report (search): org=${org} operadores=${authors.length} ${sinceISO}..${untilISO} PRs=${includePRs} ==`)
+  const members: MemberResult[] = []
+  const repoCounts: Record<string, number> = {}
   let done = 0
   let grand = 0
-  await pool(active, CONCURRENCY, async (r) => {
-    const raw = await repoAllCommits(token, r.owner, r.name, sinceISO, untilISO)
-    for (const it of raw) {
-      const login = String(it.author?.login || it.commit?.author?.name || '')
-      const orig = authSet.get(login.toLowerCase())
-      if (orig) {
-        memberMap[orig].push({
-          repo: `${r.owner}/${r.name}`,
-          message: String(it.commit?.message || '').split('\n')[0].slice(0, 160),
-          date: it.commit?.author?.date || it.commit?.committer?.date || '',
-          sha: (it.sha || '').slice(0, 7), url: it.html_url || '',
-        })
-      }
-    }
-    grand += raw.length
-    let prs: number | null = null
-    if (includePRs) { try { prs = await repoPrCount(token, r.owner, r.name, sinceISO, untilISO) } catch { prs = null } }
-    repos.push({ full: `${r.owner}/${r.name}`, pushed: (r as any).pushed || '', commits: raw.length, prs })
+  for (const a of authors) {
+    let cs: Commit[] = []
+    let err = ''
+    try { cs = await searchCommitsByAuthor(token, org, a, sinceISO, untilISO) }
+    catch (e: any) { err = e?.message || String(e); log(`autor ${a}: ${err}`) }
+    cs.sort((x, y) => String(y.date).localeCompare(String(x.date)))
+    cs.forEach(c => { if (c.repo) { repoCounts[c.repo] = (repoCounts[c.repo] || 0) + 1 } })
+    grand += cs.length
+    members.push({ author: a, commits: cs, error: (err && !cs.length) ? err : undefined })
     done++
-    if (done % 10 === 0) { onProgress?.(`${done}/${active.length} repos · ${grand} commits`) }
-  })
+    onProgress?.(`${done}/${authors.length} operadores · ${grand} commits`)
+    log(`autor ${a}: ${cs.length} commits`)
+  }
+  const repos: any[] = Object.keys(repoCounts).map(full => ({ full, pushed: '', commits: repoCounts[full], prs: null as number | null }))
+  if (includePRs) {
+    await pool(repos, CONCURRENCY, async (r) => {
+      const [owner, name] = r.full.split('/')
+      try { r.prs = await repoPrCount(token, owner, name, sinceISO, untilISO) } catch { r.prs = null }
+    })
+  }
   repos.sort((a, b) => (b.commits || 0) - (a.commits || 0))
-  const members: MemberResult[] = authors.map(a => {
-    const cs = memberMap[a].sort((x, y) => String(y.date).localeCompare(String(x.date)))
-    return { author: a, commits: cs }
-  })
-  log(`== GitHub report: listo · ${grand} commits, limitado=${limited} ==`)
-  return { repoCount: active.length, repos, members, limited }
+  log(`== GitHub report: listo · ${grand} commits en ${repos.length} repos ==`)
+  return { repoCount: repos.length, repos, members, limited: false }
 }
 
 /** Commits del equipo: repos activos x autor, con registro y progreso. */
