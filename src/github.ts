@@ -42,6 +42,34 @@ async function gh(url: string, token: string): Promise<{ status: number; json: a
   } finally { clearTimeout(timer) }
 }
 
+/**
+ * Detecta los usuarios (login) que estan commiteando en los repos activos del
+ * rango, con su conteo. Sirve para EMU, donde el correo corporativo no mapea la
+ * cuenta y hay que usar el usuario de GitHub.
+ */
+export async function detectAuthors(token: string, org: string, sinceISO: string, untilISO: string, onProgress?: (m: string) => void): Promise<{ login: string; count: number }[]> {
+  const repos = await listActiveRepos(token, org, sinceISO)
+  onProgress?.(`${repos.length} repos activos · detectando autores…`)
+  const counts: Record<string, number> = {}
+  let done = 0
+  await pool(repos, CONCURRENCY, async (r) => {
+    try {
+      const { json } = await gh(`https://api.github.com/repos/${r.owner}/${r.name}/commits?since=${sinceISO}T00:00:00Z&until=${untilISO}T23:59:59Z&per_page=100`, token)
+      if (Array.isArray(json)) {
+        for (const it of json) {
+          const login = it.author?.login || it.commit?.author?.name || '(sin usuario)'
+          counts[login] = (counts[login] || 0) + 1
+        }
+      }
+    } catch (e: any) { log(`detectAuthors ${r.name}: ${e?.message || e}`) }
+    done++
+    if (done % 10 === 0) { onProgress?.(`autores: ${done}/${repos.length} repos`) }
+  })
+  const out = Object.entries(counts).map(([login, count]) => ({ login, count })).sort((a, b) => b.count - a.count).slice(0, 100)
+  log(`detectAuthors: ${out.length} usuarios`)
+  return out
+}
+
 /** Igual que gh() pero tambien devuelve la cabecera Link (para contar por paginacion). */
 async function ghFull(url: string, token: string): Promise<{ status: number; json: any; link: string }> {
   const ctrl = new AbortController()

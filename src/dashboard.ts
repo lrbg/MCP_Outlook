@@ -10,7 +10,7 @@ import { readEmailBody, sendReply, sendMail, getMe } from './outlookActions'
 import { draftReply, assistAgenda, summarizePriority, summarizeAssignments, summarizeCommits } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
-import { getGithubToken, getTeamCommits, listAllRepos, getReposStats } from './github'
+import { getGithubToken, getTeamCommits, listAllRepos, getReposStats, detectAuthors } from './github'
 import { log, showLog } from './log'
 import { recipesDir } from './mcpProvider'
 
@@ -231,6 +231,31 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
     }
     case 'githubSignIn': { await getGithubToken(true); if (panel) { panel.webview.postMessage({ type: 'ghAuthed' }) } return }
     case 'showLog': { showLog(); return }
+    case 'detectAuthors': {
+      if (!panel) { return }
+      try {
+        const org = (c.get<string>('githubOrg', '') || '').trim()
+        if (!org) { panel.webview.postMessage({ type: 'ghAuthors', error: 'Escribe la organización primero.' }); return }
+        const token = await getGithubToken(false)
+        if (!token) { panel.webview.postMessage({ type: 'ghAuthors', error: 'Conecta GitHub primero.' }); return }
+        const now = new Date()
+        const month = Number.isInteger(m.month) ? Math.max(0, Math.min(11, m.month)) : now.getMonth()
+        const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        const sinceISO = fmt(new Date(now.getFullYear(), month, 1))
+        const untilISO = fmt(new Date(now.getFullYear(), month + 1, 0))
+        const prog = (text: string) => { if (panel) { panel.webview.postMessage({ type: 'ghProgress', text }) } }
+        const authors = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: `GitHub: detectando autores en ${org}…` },
+          () => detectAuthors(token, org, sinceISO, untilISO, prog),
+        )
+        prog('')
+        panel.webview.postMessage({ type: 'ghAuthors', authors })
+      } catch (e: any) {
+        log(`detectAuthors error: ${e?.message || e}`)
+        panel.webview.postMessage({ type: 'ghAuthors', error: (e?.message || String(e)) + ' (Ver log)' })
+      }
+      return
+    }
     case 'loadGithub': {
       if (!panel) { return }
       try {
@@ -707,6 +732,7 @@ function render(s: State): string {
       <label class="muted" style="font-size:12px">Mes <select id="ghMonth" onchange="loadGithub()">${monthOpts}</select></label>
       <span style="flex:1"></span>
       <button class="sec" onclick="post('githubSignIn')">Conectar GitHub</button>
+      <button class="sec" onclick="detectAuth()">Detectar autores</button>
       <button class="sec" onclick="post('showLog')">Ver log</button>
       <button class="sec" onclick="loadGithub()">Actualizar</button>
     </div>
@@ -714,10 +740,12 @@ function render(s: State): string {
       <input type="text" id="ghOrg" placeholder="organización de GitHub (login de la URL)" value="${esc(s.githubOrg)}" onchange="post('setGithubOrg',{org:this.value})">
     </div>
     <div class="senderbox" style="margin-top:8px">
-      <input type="text" id="newGh" placeholder="correo o usuario de GitHub del operador" onkeydown="if(event.key==='Enter')addGh()">
+      <input type="text" id="newGh" placeholder="usuario de GitHub del operador (ej. nombre_metlife)" onkeydown="if(event.key==='Enter')addGh()">
       <button class="sec" onclick="addGh()">Agregar operador</button>
     </div>
+    <p class="sub" style="margin-top:6px">En organizaciones EMU el correo no funciona; usa el <strong>usuario</strong> de GitHub. Presiona "Detectar autores" para verlos y agregarlos con un clic.</p>
     <div class="chips" id="ghchips" style="margin-top:8px"></div>
+    <div id="ghAuthors" style="margin-top:8px"></div>
     <div id="ghProgress" class="muted" style="margin-top:10px"></div>
   </div>
 
@@ -865,6 +893,13 @@ function render(s: State): string {
     function rmGh(m){ post('removeGhMember',{email:m}); }
     function ghChips(){ document.getElementById('ghchips').innerHTML = gh.team.length? gh.team.map(m=>'<span class="chip">'+esc(m)+'<button class="x" onclick="rmGh(\\''+esc(m)+'\\')">&times;</button></span>').join('') : '<span class="muted">Sin operadores. Agrega correos o usuarios de GitHub arriba.</span>'; }
     function ghMonthVal(){ const el=document.getElementById('ghMonth'); return el? (+el.value) : (new Date().getMonth()); }
+    function detectAuth(){ document.getElementById('ghAuthors').innerHTML='<p class="muted">Detectando autores…</p>'; post('detectAuthors',{month:ghMonthVal()}); }
+    function renderAuthors(list, err){
+      const box=document.getElementById('ghAuthors');
+      if(err){ box.innerHTML='<p class="muted">'+esc(err)+'</p>'; return; }
+      if(!list||!list.length){ box.innerHTML='<p class="muted">No se detectaron autores en el mes.</p>'; return; }
+      box.innerHTML='<div class="muted" style="margin-bottom:4px">Autores detectados (clic para agregar como operador):</div>'+list.map(a=>'<span class="chip" style="cursor:pointer" title="Agregar" onclick="post(\\'addGhMember\\',{email:\\''+esc(a.login)+'\\'})">'+esc(a.login)+' ('+a.count+')</span>').join(' ');
+    }
     function loadGithub(){ document.getElementById('ghProgress').textContent='Consultando GitHub…'; document.getElementById('ghrepos').innerHTML='<p class="muted">Cargando…</p>'; document.getElementById('ghops').innerHTML='<p class="muted">Cargando…</p>'; post('loadGithub',{month:ghMonthVal()}); }
     function ghRepoFilter(v){ gh.repoFilter=(v||'').toLowerCase(); gh.repoPage=0; renderRepos(); }
     function ghOpFilter(v){ gh.opFilter=(v||'').toLowerCase(); gh.opPage=0; renderOps(); }
@@ -979,6 +1014,7 @@ function render(s: State): string {
       else if (m.type === 'github') { gh.org=m.org||''; gh.err=m.error||''; gh.repoCount=m.repoCount||0; gh.repos=m.allRepos||[]; gh.members=m.members||[]; gh.desc={}; gh.repoPage=0; gh.opPage=0; const el=document.getElementById('ghProgress'); if(el) el.textContent=''; renderRepos(); renderOps(); }
       else if (m.type === 'ghDesc') { (m.descriptions||[]).forEach(x=>{gh.desc[x.author]=x.desc;}); gh.members.forEach(mm=>{ if(gh.desc[mm.author]===undefined) gh.desc[mm.author]=''; }); renderOps(); }
       else if (m.type === 'ghTeam') { gh.team=m.team||[]; ghChips(); }
+      else if (m.type === 'ghAuthors') { renderAuthors(m.authors, m.error); }
       else if (m.type === 'ghAuthed') { loadGithub(); }
       else if (m.type === 'replySent') { closeModal(); setTimeout(loadInbox, 1500); }
       else if (m.type === 'agenda') { renderAgenda(m); }
