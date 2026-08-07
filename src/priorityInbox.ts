@@ -20,6 +20,59 @@ export interface PriorityEmail extends RawEmail {
   replyBody?: string
 }
 
+export interface InboxEmail {
+  id: string
+  sender: string
+  senderEmail: string
+  subject: string
+  received: string
+  unread: boolean
+  isPriority: boolean
+}
+
+/**
+ * Lee la bandeja reciente y marca cada correo como prioritario (remitente en la
+ * lista) o no. Sirve para las dos listas del panel.
+ */
+export function getInboxClassified(senders: string[], days = 14, max = 80): InboxEmail[] {
+  if (!isWindows) { throw new Error('Requiere Windows con Outlook de escritorio.') }
+  const set = senders.map(s => s.trim().toLowerCase()).filter(Boolean)
+  const script = `
+${PS_B64_FN}
+$set = @{}
+foreach ($e in ($env:PRIORITY_SENDERS -split ',')) { $t = $e.Trim().ToLower(); if ($t) { $set[$t] = $true } }
+$ol = New-Object -ComObject Outlook.Application
+$ns = $ol.GetNamespace("MAPI")
+$folder = $ns.GetDefaultFolder(6)
+$items = $folder.Items
+$items.Sort("[ReceivedTime]", $true)
+$cut = (Get-Date).AddDays(-${days}).ToString("MM/dd/yyyy HH:mm")
+$recent = $items.Restrict("[ReceivedTime] >= '$cut'")
+$result = @()
+$seen = 0
+foreach ($item in $recent) {
+  if ($seen -ge ${max}) { break }
+  $seen++
+  try {
+    $smtp = $item.SenderEmailAddress
+    if ($item.SenderEmailType -eq 'EX') { try { $ex = $item.Sender.GetExchangeUser(); if ($ex) { $smtp = $ex.PrimarySmtpAddress } } catch {} }
+    $isP = $set.ContainsKey(([string]$smtp).ToLower())
+    $result += [PSCustomObject]@{
+      id = $item.EntryID; senderEmail = $smtp
+      received = $item.ReceivedTime.ToString("yyyy-MM-dd HH:mm")
+      unread = $item.UnRead; prio = $isP
+      s = B64($item.Subject); n = B64($item.SenderName)
+    }
+  } catch {}
+}
+if ($result.Count -eq 0) { Write-Output "[]" } else { $result | ConvertTo-Json -Depth 2 }
+`
+  return parsePsArray(ps(script, { PRIORITY_SENDERS: set.join(',') })).map(r => ({
+    id: r.id, senderEmail: r.senderEmail, received: r.received, unread: r.unread,
+    isPriority: !!r.prio, subject: dec(r.s), sender: dec(r.n),
+  })) as InboxEmail[]
+}
+
 function ps(script: string, env: Record<string, string>): string {
   const full = `$ProgressPreference = 'SilentlyContinue'\n$ErrorActionPreference = 'Stop'\n${script}`
   const encoded = Buffer.from(full, 'utf16le').toString('base64')

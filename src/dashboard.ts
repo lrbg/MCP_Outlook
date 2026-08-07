@@ -1,7 +1,7 @@
 import * as vscode from 'vscode'
 import { DayEntry, toMarkdown } from './bitacoraCore'
 import { loadEntries, runDailyReview } from './dailyReview'
-import { getPriorityEmails, isWindows } from './priorityInbox'
+import { getPriorityEmails, getInboxClassified, isWindows } from './priorityInbox'
 import { classifyPriority, labelText } from './priorityClassify'
 import { loadStatus, setStatus, clearStatus } from './priorityState'
 import { readEmailBody, sendReply, getMe } from './outlookActions'
@@ -71,6 +71,21 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
   const c = vscode.workspace.getConfiguration('m365')
   const G = vscode.ConfigurationTarget.Global
   switch (m?.type) {
+    case 'loadInbox': {
+      if (!panel) { return }
+      try {
+        const days = Math.min(Math.max(Number(m.days) || 14, 1), 60)
+        const items = getInboxClassified(c.get<string[]>('prioritySenders', []), days, 120)
+        panel.webview.postMessage({
+          type: 'inbox',
+          priority: items.filter(x => x.isPriority),
+          other: items.filter(x => !x.isPriority),
+        })
+      } catch (e: any) {
+        panel.webview.postMessage({ type: 'inbox', error: e?.message || String(e) })
+      }
+      return
+    }
     case 'loadPriority': {
       if (!panel) { return }
       try {
@@ -380,9 +395,32 @@ function render(s: State): string {
   </div>
 
   <div class="card">
-    <h2>Bitácora <span class="muted" style="font-weight:400">· resúmenes de cada sondeo</span><span style="flex:1"></span><button class="sec" onclick="post('exportMd')">Guardar .md</button></h2>
-    ${bitacoraRows}
-    ${notes}
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2>Correos</h2>
+      <div class="seg" id="inboxseg">
+        <button data-d="1" onclick="setInboxRange(1)">Hoy</button>
+        <button data-d="7" onclick="setInboxRange(7)">Semana</button>
+        <button data-d="14" class="active" onclick="setInboxRange(14)">2 semanas</button>
+      </div>
+      <span style="flex:1"></span>
+      <button class="sec" onclick="loadInbox()">Actualizar</button>
+    </div>
+    <div class="senderbox" style="margin-top:10px">
+      <input type="text" id="newSender" placeholder="correo prioritario: nombre@empresa.com" onkeydown="if(event.key==='Enter')addSender()">
+      <button class="sec" onclick="addSender()">Agregar prioritario</button>
+    </div>
+    <div class="chips" style="margin-top:8px">${senderChips}</div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Prioritarios <span class="muted" style="font-weight:400">· sí me importan</span></h2>
+      <div id="prio"><p class="muted">Cargando…</p></div>
+    </div>
+    <div class="card">
+      <h2>No prioritarios <span class="muted" style="font-weight:400">· pueden esperar</span></h2>
+      <div id="other"><p class="muted">Cargando…</p></div>
+    </div>
   </div>
 
   <script>
@@ -454,6 +492,17 @@ function render(s: State): string {
     }
     function markStatus(id,status){ const it=allEmails.find(x=>x.id===id); if(it){ it.status=status; } post('markStatus',{id,status}); renderPriority(); }
 
+    let inboxDays = 14;
+    function setInboxRange(d){ inboxDays=d; document.querySelectorAll('#inboxseg button').forEach(b=>b.classList.toggle('active',(+b.dataset.d)===d)); loadInbox(); }
+    function loadInbox(){ document.getElementById('prio').innerHTML='<p class="muted">Cargando…</p>'; document.getElementById('other').innerHTML='<p class="muted">Cargando…</p>'; post('loadInbox',{days:inboxDays}); }
+    function mailItem(x){ return '<div class="mailrow '+(x.unread?'unread ':'')+'"><div class="top"><span class="from">'+esc(x.sender||x.senderEmail)+'</span><span class="muted">'+esc(x.received)+'</span></div><div class="subj">'+esc(x.subject||'(sin asunto)')+'</div><div class="actions"><button class="sec" onclick="openEmail(\\''+esc(x.id)+'\\')">Ver</button></div></div>'; }
+    function renderInbox(m){
+      const p=document.getElementById('prio'), o=document.getElementById('other');
+      if(m.error){ p.innerHTML=o.innerHTML='<p class="muted">No se pudo leer la bandeja: '+esc(m.error)+'</p>'; return; }
+      p.innerHTML=(m.priority&&m.priority.length)? m.priority.map(mailItem).join('') : '<p class="muted">Sin correos prioritarios en el rango.</p>';
+      o.innerHTML=(m.other&&m.other.length)? m.other.map(mailItem).join('') : '<p class="muted">Sin otros correos en el rango.</p>';
+    }
+
     window.addEventListener('message', e => {
       const m = e.data;
       if (m.type === 'priority') {
@@ -465,6 +514,7 @@ function render(s: State): string {
         else if (modalId===m.id) { showCompose(m.id, m.body, true); }
       }
       else if (m.type === 'emailBody') { renderEmail(m); }
+      else if (m.type === 'inbox') { renderInbox(m); }
       else if (m.type === 'replySent') { closeModal(); }
       else if (m.type === 'agenda') { renderAgenda(m); }
       else if (m.type === 'agendaNotes') {
@@ -489,6 +539,7 @@ function render(s: State): string {
       }).join('');
       box.innerHTML=html;
     }
+    loadInbox();
   </script>
 </body></html>`
 }
