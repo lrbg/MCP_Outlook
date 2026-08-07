@@ -33,7 +33,7 @@ export async function refresh(context: vscode.ExtensionContext): Promise<void> {
 interface KindDef { keyword: string; file: string; teamCfg: string; reqMsg: string; teamMsg: string; label: string }
 const KIND: Record<string, KindDef> = {
   data: { keyword: 'datos sint', file: 'dataAssignments.json', teamCfg: 'dataTeam', reqMsg: 'requests', teamMsg: 'team', label: 'Datos Sintéticos' },
-  perf: { keyword: 'performance', file: 'perfAssignments.json', teamCfg: 'perfTeam', reqMsg: 'perfRequests', teamMsg: 'perfTeam', label: 'Performance' },
+  perf: { keyword: 'solicitud de performance', file: 'perfAssignments.json', teamCfg: 'perfTeam', reqMsg: 'perfRequests', teamMsg: 'perfTeam', label: 'Performance' },
 }
 
 async function postRequests(context: vscode.ExtensionContext, k: string): Promise<void> {
