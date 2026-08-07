@@ -32,6 +32,38 @@ export async function assistAgenda(meetings: any[], token: vscode.CancellationTo
   return text.trim() || '_Sin recomendaciones._'
 }
 
+/**
+ * Resumen estructurado de los correos prioritarios en UNA sola llamada.
+ * Devuelve un arreglo con { id, resumen, reunion:{es,cuando,modo,donde}, respuesta }.
+ */
+export async function summarizePriority(emails: any[], token: vscode.CancellationToken): Promise<any[]> {
+  if (!emails.length) { return [] }
+  const model = await pickModel()
+  const compact = emails.map(e => ({
+    id: e.id, de: e.sender || e.senderEmail || '', asunto: e.subject || '', recibido: e.received || '',
+    para: e.to || '', cc: e.cc || '', yaRespondi: !!e.repliedAt,
+    miRespuesta: (e.replyBody || '').replace(/\s+/g, ' ').slice(0, 300),
+    cuerpo: (e.bodySnippet || '').replace(/\s+/g, ' ').slice(0, 700),
+  }))
+  const prompt =
+    'Eres mi asistente de correo. Te doy mis correos prioritarios en JSON. ' +
+    'Devuelve SOLO un arreglo JSON valido (sin texto extra, sin markdown), un objeto por correo, con EXACTAMENTE estas llaves:\n' +
+    '- "id": el id tal cual del correo.\n' +
+    '- "resumen": 1 frase CORTA, clara y util en espanol de que trata o que piden.\n' +
+    '- "reunion": objeto { "es": true|false, "cuando": texto corto o "", "modo": "Teams"|"Presencial"|"", "donde": texto corto o "" }. es=true solo si el correo es sobre una llamada/junta/reunion. Infiere modo/donde del texto: Teams si hay link o menciona Teams/en linea; Presencial si menciona sala/piso/oficina/direccion.\n' +
+    '- "respuesta": si ya respondi (yaRespondi=true), 1 linea CORTA de que respondi; si no, "".\n' +
+    'No inventes datos que no esten. Responde unicamente el JSON.\n\n' +
+    '```json\n' + JSON.stringify(compact) + '\n```'
+  const resp = await model.sendRequest([vscode.LanguageModelChatMessage.User(prompt)], {}, token)
+  let text = ''
+  for await (const chunk of resp.text) { text += chunk }
+  text = text.trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim()
+  try {
+    const arr = JSON.parse(text)
+    return Array.isArray(arr) ? arr : []
+  } catch { return [] }
+}
+
 /** Redacta un borrador de respuesta al correo dado, para que el usuario lo edite. */
 export async function draftReply(email: EmailBody, token: vscode.CancellationToken, instruction = ''): Promise<string> {
   const model = await pickModel()

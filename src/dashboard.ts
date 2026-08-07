@@ -5,7 +5,7 @@ import { getPriorityEmails, getInboxClassified, isWindows } from './priorityInbo
 import { classifyPriority, labelText } from './priorityClassify'
 import { loadStatus, setStatus, clearStatus } from './priorityState'
 import { readEmailBody, sendReply, getMe } from './outlookActions'
-import { draftReply, assistAgenda } from './copilot'
+import { draftReply, assistAgenda, summarizePriority } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
 import { recipesDir } from './mcpProvider'
@@ -26,6 +26,23 @@ export async function openDashboard(context: vscode.ExtensionContext): Promise<v
 export async function refresh(context: vscode.ExtensionContext): Promise<void> {
   if (!panel) { return }
   panel.webview.html = render(await gather(context))
+}
+
+/** Convierte el rango elegido (today/week/2weeks, por calendario) a dias hacia atras. */
+function daysFromRange(range: string): number {
+  const DAY = 86400000
+  const now = Date.now()
+  if (range === 'week' || range === '2weeks') {
+    const x = new Date()
+    const diff = (x.getDay() + 6) % 7 // lunes = inicio de semana
+    x.setDate(x.getDate() - diff)
+    x.setHours(0, 0, 0, 0)
+    if (range === '2weeks') { x.setDate(x.getDate() - 7) }
+    return Math.max((now - x.getTime()) / DAY, 0.01)
+  }
+  const m = new Date()
+  m.setHours(0, 0, 0, 0)
+  return Math.max((now - m.getTime()) / DAY, 0.01)
 }
 
 // ── Estado ────────────────────────────────────────────────────────
@@ -74,13 +91,18 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
     case 'loadInbox': {
       if (!panel) { return }
       try {
-        const days = Math.min(Math.max(Number(m.days) || 14, 1), 60)
-        const items = getInboxClassified(c.get<string[]>('prioritySenders', []), days, 120)
-        panel.webview.postMessage({
-          type: 'inbox',
-          priority: items.filter(x => x.isPriority),
-          other: items.filter(x => !x.isPriority),
-        })
+        const days = daysFromRange(String(m.range || 'today'))
+        const senders = c.get<string[]>('prioritySenders', [])
+        const priority = getPriorityEmails(senders, days, 40)
+        const other = getInboxClassified(senders, days, 150).filter(x => !x.isPriority)
+        panel.webview.postMessage({ type: 'inbox', priority, other })
+        // Resumen de Copilot de los prioritarios (una sola llamada), en segundo plano.
+        try {
+          const summaries = await summarizePriority(priority, new vscode.CancellationTokenSource().token)
+          if (panel) { panel.webview.postMessage({ type: 'inboxSummaries', summaries }) }
+        } catch {
+          if (panel) { panel.webview.postMessage({ type: 'inboxSummaries', summaries: [] }) }
+        }
       } catch (e: any) {
         panel.webview.postMessage({ type: 'inbox', error: e?.message || String(e) })
       }
@@ -271,6 +293,15 @@ function render(s: State): string {
 
   const winWarn = s.windows ? '' : '<div class="warn">Este panel usa Outlook de escritorio (COM) y requiere Windows.</div>'
 
+  const hourOpts = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${String(h).padStart(2, '0')}:00</option>`).join('')
+  const filterBar = (p: string) =>
+    `<div class="filters">
+      <input type="text" placeholder="Buscar remitente o asunto" oninput="setFilter('${p}','search',this.value)">
+      <input type="date" onchange="setFilter('${p}','date',this.value)" title="Filtrar por fecha">
+      <select onchange="setFilter('${p}','hour',this.value)"><option value="">Hora</option>${hourOpts}</select>
+      <select onchange="setFilter('${p}','status',this.value)"><option value="">Estatus</option><option value="unread">No leídos</option><option value="replied">Respondidos</option><option value="unreplied">Sin responder</option></select>
+    </div>`
+
   return `<!doctype html><html><head><meta charset="utf-8"><style>
   :root { --gap: 16px; }
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 18px 22px; font-size: 13px; }
@@ -324,6 +355,17 @@ function render(s: State): string {
     padding: 5px 12px; font-size: 12px; cursor: pointer; }
   .seg button:last-child { border-right: none; }
   .seg button.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px; }
+  .filters input, .filters select { flex: 1; min-width: 92px; padding: 4px 6px; font-size: 12px; }
+  .filters input[type=text] { flex: 2; min-width: 130px; }
+  .pager { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 10px; font-size: 12px; }
+  .pager button[disabled] { opacity: .4; cursor: default; }
+  .badge-meet { display: inline-block; margin-top: 6px; font-size: 11px; padding: 2px 8px; border-radius: 4px; background: rgba(215,160,23,.15); color: #d9a017; border: 1px solid #d9a017; }
+  .mailrow.ismeet { border-left: 3px solid #d9a017; padding-left: 8px; }
+  .summ { margin: 6px 0; font-size: 12px; }
+  .rec { font-size: 11px; margin-top: 2px; }
+  .rep { font-size: 11px; color: #3fb950; margin-top: 3px; }
+  .pend { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 3px; }
   details.day { border-top: 1px solid var(--vscode-panel-border); padding: 8px 0; }
   details.day summary { cursor: pointer; font-weight: 600; }
   .notes h4 { margin: 8px 0 3px; font-size: 12px; } .notes p { margin: 3px 0; } .notes ul { margin: 3px 0 3px 16px; }
@@ -398,9 +440,9 @@ function render(s: State): string {
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <h2>Correos</h2>
       <div class="seg" id="inboxseg">
-        <button data-d="1" onclick="setInboxRange(1)">Hoy</button>
-        <button data-d="7" onclick="setInboxRange(7)">Semana</button>
-        <button data-d="14" class="active" onclick="setInboxRange(14)">2 semanas</button>
+        <button data-r="today" class="active" onclick="setInboxRange('today')">Hoy</button>
+        <button data-r="week" onclick="setInboxRange('week')">Esta semana</button>
+        <button data-r="2weeks" onclick="setInboxRange('2weeks')">2 semanas</button>
       </div>
       <span style="flex:1"></span>
       <button class="sec" onclick="loadInbox()">Actualizar</button>
@@ -415,11 +457,15 @@ function render(s: State): string {
   <div class="grid2">
     <div class="card">
       <h2>Prioritarios <span class="muted" style="font-weight:400">· sí me importan</span></h2>
+      ${filterBar('prio')}
       <div id="prio"><p class="muted">Cargando…</p></div>
+      <div id="prio-pager" class="pager"></div>
     </div>
     <div class="card">
       <h2>No prioritarios <span class="muted" style="font-weight:400">· pueden esperar</span></h2>
+      ${filterBar('other')}
       <div id="other"><p class="muted">Cargando…</p></div>
+      <div id="other-pager" class="pager"></div>
     </div>
   </div>
 
@@ -492,16 +538,57 @@ function render(s: State): string {
     }
     function markStatus(id,status){ const it=allEmails.find(x=>x.id===id); if(it){ it.status=status; } post('markStatus',{id,status}); renderPriority(); }
 
-    let inboxDays = 14;
-    function setInboxRange(d){ inboxDays=d; document.querySelectorAll('#inboxseg button').forEach(b=>b.classList.toggle('active',(+b.dataset.d)===d)); loadInbox(); }
-    function loadInbox(){ document.getElementById('prio').innerHTML='<p class="muted">Cargando…</p>'; document.getElementById('other').innerHTML='<p class="muted">Cargando…</p>'; post('loadInbox',{days:inboxDays}); }
-    function mailItem(x){ return '<div class="mailrow '+(x.unread?'unread ':'')+'"><div class="top"><span class="from">'+esc(x.sender||x.senderEmail)+'</span><span class="muted">'+esc(x.received)+'</span></div><div class="subj">'+esc(x.subject||'(sin asunto)')+'</div><div class="actions"><button class="sec" onclick="openEmail(\\''+esc(x.id)+'\\')">Ver</button></div></div>'; }
-    function renderInbox(m){
-      const p=document.getElementById('prio'), o=document.getElementById('other');
-      if(m.error){ p.innerHTML=o.innerHTML='<p class="muted">No se pudo leer la bandeja: '+esc(m.error)+'</p>'; return; }
-      p.innerHTML=(m.priority&&m.priority.length)? m.priority.map(mailItem).join('') : '<p class="muted">Sin correos prioritarios en el rango.</p>';
-      o.innerHTML=(m.other&&m.other.length)? m.other.map(mailItem).join('') : '<p class="muted">Sin otros correos en el rango.</p>';
+    let inboxRange = 'today';
+    const lists = { prio:{data:[],page:0,search:'',date:'',hour:'',status:''}, other:{data:[],page:0,search:'',date:'',hour:'',status:''} };
+    const PAGE = 6;
+    function setInboxRange(r){ inboxRange=r; document.querySelectorAll('#inboxseg button').forEach(b=>b.classList.toggle('active',b.dataset.r===r)); loadInbox(); }
+    function loadInbox(){ ['prio','other'].forEach(k=>{document.getElementById(k).innerHTML='<p class="muted">Cargando…</p>';document.getElementById(k+'-pager').innerHTML='';}); post('loadInbox',{range:inboxRange}); }
+    function setFilter(key,f,v){ lists[key][f]=v; lists[key].page=0; renderList(key); }
+    function pageNav(key,d){ lists[key].page+=d; renderList(key); }
+    function daysAgo(recv){ const d=Date.parse(String(recv||'').replace(' ','T')); if(!d)return ''; const n=Math.floor((Date.now()-d)/86400000); return n<=0?'hoy':(n===1?'1 día en bandeja':(n+' días en bandeja')); }
+    function filtered(key){ const s=lists[key]; const q=(s.search||'').toLowerCase();
+      return s.data.filter(x=>{
+        if(q && !(((x.sender||'')+' '+(x.senderEmail||'')+' '+(x.subject||'')).toLowerCase().includes(q))) return false;
+        if(s.date && !String(x.received||'').startsWith(s.date)) return false;
+        if(s.hour!=='' && String(x.received||'').slice(11,13)!==String(s.hour).padStart(2,'0')) return false;
+        if(s.status==='unread' && !x.unread) return false;
+        if(s.status==='replied' && !x.repliedAt) return false;
+        if(s.status==='unreplied' && x.repliedAt) return false;
+        return true;
+      });
     }
+    function renderList(key){
+      const s=lists[key]; const arr=filtered(key);
+      const pages=Math.max(1,Math.ceil(arr.length/PAGE));
+      if(s.page>=pages)s.page=pages-1; if(s.page<0)s.page=0;
+      const slice=arr.slice(s.page*PAGE,(s.page+1)*PAGE);
+      document.getElementById(key).innerHTML = slice.length? slice.map(x=> key==='prio'?prioItem(x):otherItem(x)).join('') : '<p class="muted">Sin correos con esos filtros.</p>';
+      document.getElementById(key+'-pager').innerHTML = pages>1
+        ? ('<button class="sec" onclick="pageNav(\\''+key+'\\',-1)"'+(s.page===0?' disabled':'')+'>‹ Anterior</button><span class="muted">'+(s.page+1)+' / '+pages+' · '+arr.length+'</span><button class="sec" onclick="pageNav(\\''+key+'\\',1)"'+(s.page>=pages-1?' disabled':'')+'>Siguiente ›</button>')
+        : (arr.length? '<span class="muted">'+arr.length+' correos</span>':'');
+    }
+    function otherItem(x){ return '<div class="mailrow '+(x.unread?'unread ':'')+'"><div class="top"><span class="from">'+esc(x.sender||x.senderEmail)+'</span><span class="muted">'+esc(x.received)+' · '+daysAgo(x.received)+'</span></div><div class="subj">'+esc(x.subject||'(sin asunto)')+'</div><div class="actions"><button class="sec" onclick="openEmail(\\''+esc(x.id)+'\\')">Ver</button></div></div>'; }
+    function prioItem(x){
+      const rec=(x.to||'')+(x.cc?('; '+x.cc):'');
+      const mt=x.meeting&&x.meeting.es;
+      const meetBadge= mt? '<div class="badge-meet">Junta'+([x.meeting.modo,x.meeting.cuando,x.meeting.donde].filter(Boolean).length?' · '+esc([x.meeting.modo,x.meeting.cuando,x.meeting.donde].filter(Boolean).join(' · ')):'')+'</div>' : '';
+      const summ = (x.resumen!==undefined)? '<div class="summ">'+esc(x.resumen||'—')+'</div>' : '<div class="summ muted">Resumiendo…</div>';
+      const replied = x.repliedAt? '<div class="rep">Respondido · '+esc(x.repliedAt)+(x.respuesta?(' — '+esc(x.respuesta)):'')+'</div>' : '<div class="pend">Sin responder</div>';
+      return '<div class="mailrow '+(x.unread?'unread ':'')+(mt?'ismeet ':'')+'">'+
+        '<div class="top"><span class="from">'+esc(x.sender||x.senderEmail)+'</span><span class="muted">'+esc(x.received)+' · '+daysAgo(x.received)+'</span></div>'+
+        '<div class="subj">'+esc(x.subject||'(sin asunto)')+'</div>'+
+        meetBadge+summ+
+        '<div class="muted rec">Con: '+esc(rec||'—')+'</div>'+
+        replied+
+        '<div class="actions"><button class="sec" onclick="openEmail(\\''+esc(x.id)+'\\')">Ver</button></div></div>';
+    }
+    function renderInbox(m){
+      if(m.error){ ['prio','other'].forEach(k=>document.getElementById(k).innerHTML='<p class="muted">No se pudo leer la bandeja: '+esc(m.error)+'</p>'); return; }
+      lists.prio.data=m.priority||[]; lists.prio.page=0;
+      lists.other.data=m.other||[]; lists.other.page=0;
+      renderList('prio'); renderList('other');
+    }
+    function mergeSummaries(arr){ const by={}; (arr||[]).forEach(s=>{by[s.id]=s;}); lists.prio.data.forEach(x=>{ const s=by[x.id]; if(s){ x.resumen=s.resumen||''; x.meeting=s.reunion||{es:false}; x.respuesta=s.respuesta||''; } else { x.resumen=x.resumen||''; } }); renderList('prio'); }
 
     window.addEventListener('message', e => {
       const m = e.data;
@@ -515,6 +602,7 @@ function render(s: State): string {
       }
       else if (m.type === 'emailBody') { renderEmail(m); }
       else if (m.type === 'inbox') { renderInbox(m); }
+      else if (m.type === 'inboxSummaries') { mergeSummaries(m.summaries); }
       else if (m.type === 'replySent') { closeModal(); }
       else if (m.type === 'agenda') { renderAgenda(m); }
       else if (m.type === 'agendaNotes') {
