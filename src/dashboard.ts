@@ -11,6 +11,7 @@ import { draftReply, assistAgenda, summarizePriority, summarizeAssignments } fro
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
 import { getGithubToken, getTeamCommits } from './github'
+import { log, showLog } from './log'
 import { recipesDir } from './mcpProvider'
 
 let panel: vscode.WebviewPanel | undefined
@@ -229,6 +230,7 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
       return
     }
     case 'githubSignIn': { await getGithubToken(true); if (panel) { panel.webview.postMessage({ type: 'ghAuthed' }) } return }
+    case 'showLog': { showLog(); return }
     case 'loadGithub': {
       if (!panel) { return }
       try {
@@ -240,12 +242,13 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
         if (!authors.length) { panel.webview.postMessage({ type: 'github', org, members: [], repoCount: 0 }); return }
         const since = new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10)
         const r = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: `GitHub: revisando repos de ${org}…` },
-          () => getTeamCommits(token, org, authors, since),
+          { location: vscode.ProgressLocation.Notification, title: `GitHub: revisando repos de ${org}…`, cancellable: false },
+          (prog) => getTeamCommits(token, org, authors, since, (msg) => prog.report({ message: msg })),
         )
         panel.webview.postMessage({ type: 'github', org, members: r.members, repoCount: r.repoCount })
       } catch (e: any) {
-        panel.webview.postMessage({ type: 'github', error: e?.message || String(e) })
+        log(`loadGithub error: ${e?.message || e}`)
+        panel.webview.postMessage({ type: 'github', error: (e?.message || String(e)) + ' (revisa "Ver log")' })
       }
       return
     }
@@ -680,6 +683,7 @@ function render(s: State): string {
       </div>
       <span style="flex:1"></span>
       <button class="sec" onclick="post('githubSignIn')">Conectar GitHub</button>
+      <button class="sec" onclick="post('showLog')">Ver log</button>
       <button class="sec" onclick="loadGithub()">Actualizar</button>
     </div>
     <div class="senderbox" style="margin-top:10px">
