@@ -715,7 +715,7 @@ function render(s: State): string {
       const host=document.getElementById('modalHost');
       if(m.error){ host.innerHTML='<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="mhead"><span class="mtitle">Correo</span><button class="x" onclick="closeModal()">&times;</button></div><p class="muted">No se pudo abrir: '+esc(m.error)+'</p></div></div>'; return; }
       store[m.id]={sender:m.sender};
-      const src=allEmails.find(x=>x.id===m.id)||{};
+      const src=(lists.prio.data.concat(lists.other.data)).find(x=>x.id===m.id)||{};
       const repliedBlock=src.replied?('<div class="replied-callout"><div style="font-weight:600;color:#3fb950">Ya respondiste este correo · '+esc(src.repliedAt)+'</div><div class="mailbody" style="max-height:200px;border:none;padding:6px 0 0">'+esc(src.replyBody||'(sin texto)')+'</div></div>'):'';
       host.innerHTML='<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal">'+
         '<div class="mhead"><div class="mtitle">'+esc(m.subject||'(sin asunto)')+'</div><button class="x" onclick="closeModal()" aria-label="Cerrar">&times;</button></div>'+
@@ -921,7 +921,7 @@ function render(s: State): string {
       else if (m.type === 'github') { ghData.members=m.members||[]; ghData.org=m.org||''; ghData.err=m.error||''; renderGithub(); }
       else if (m.type === 'ghTeam') { ghData.team=m.team||[]; ghChips(); }
       else if (m.type === 'ghAuthed') { loadGithub(); }
-      else if (m.type === 'replySent') { closeModal(); }
+      else if (m.type === 'replySent') { closeModal(); setTimeout(loadInbox, 1500); }
       else if (m.type === 'agenda') { renderAgenda(m); }
       else if (m.type === 'agendaNotes') {
         const box=document.getElementById('agendaNotes');
