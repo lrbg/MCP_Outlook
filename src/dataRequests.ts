@@ -29,6 +29,63 @@ function norm(s: string): string {
   return (s || '').normalize('NFD').replace(new RegExp('[\\u0300-\\u036f]', 'g'), '').toLowerCase()
 }
 
+/**
+ * Para cada EntryID dado, arma un "digest" del hilo de conversacion (mensajes de
+ * bandeja de entrada + enviados de la misma conversacion), para que la IA infiera
+ * el estado real de la solicitud a partir del historial.
+ */
+export function getThreadDigests(entryIds: string[], daysBack = 60): { id: string; digest: string }[] {
+  if (!isWindows) { throw new Error('Requiere Windows con Outlook de escritorio.') }
+  const ids = entryIds.filter(Boolean)
+  if (!ids.length) { return [] }
+  const d = Math.min(Math.max(daysBack, 7), 120)
+  const script = `
+${PS_B64_FN}
+$ids = $env:IDS -split ','
+$ns = (New-Object -ComObject Outlook.Application).GetNamespace("MAPI")
+$want = @{}
+$idToCid = @{}
+foreach ($id in $ids) {
+  try { $it = $ns.GetItemFromID($id); $cid = [string]$it.ConversationID; if ($cid) { $want[$cid] = $true; $idToCid[$id] = $cid } } catch {}
+}
+$msgs = @{}
+$cut = (Get-Date).AddDays(-${d}).ToString("MM/dd/yyyy HH:mm")
+foreach ($fn in @(6,5)) {
+  try {
+    $folder = $ns.GetDefaultFolder($fn)
+    $items = $folder.Items
+    if ($fn -eq 5) { $items.Sort("[SentOn]", $true); $sub = $items.Restrict("[SentOn] >= '$cut'") }
+    else { $items.Sort("[ReceivedTime]", $true); $sub = $items.Restrict("[ReceivedTime] >= '$cut'") }
+    $n = 0
+    foreach ($it in $sub) {
+      if ($n -ge 1500) { break }
+      $n++
+      try {
+        $cid = [string]$it.ConversationID
+        if ($cid -and $want.ContainsKey($cid)) {
+          $when = ""; $who = ""
+          if ($fn -eq 5) { try { $when = $it.SentOn.ToString("yyyy-MM-dd HH:mm") } catch {}; $who = "YO (enviado)" }
+          else { try { $when = $it.ReceivedTime.ToString("yyyy-MM-dd HH:mm") } catch {}; $who = [string]$it.SenderName }
+          $bd = [string]$it.Body; if ($bd.Length -gt 400) { $bd = $bd.Substring(0,400) }
+          if (-not $msgs.ContainsKey($cid)) { $msgs[$cid] = @() }
+          $msgs[$cid] += ("[" + $when + "] " + $who + ": " + $bd)
+        }
+      } catch {}
+    }
+  } catch {}
+}
+$result = @()
+foreach ($id in $ids) {
+  $cid = $idToCid[$id]
+  $lines = ""
+  if ($cid -and $msgs.ContainsKey($cid)) { $lines = (($msgs[$cid] | Select-Object -First 12) -join "  ||  ") }
+  $result += [PSCustomObject]@{ id = $id; d = B64($lines) }
+}
+if ($result.Count -eq 0) { Write-Output "[]" } else { $result | ConvertTo-Json -Depth 2 }
+`
+  return parsePsArrayEnv(script, { IDS: ids.join(',') }).map((r: any) => ({ id: r.id, digest: dec(r.d) })) as { id: string; digest: string }[]
+}
+
 /** Extrae un campo "Etiqueta: valor" hasta la siguiente etiqueta, coma o salto. */
 function field(body: string, label: string): string {
   const stop = '(?=,|\\n|\\r|Solicitante:|Equipo:|Proyecto:|Fecha|$)'

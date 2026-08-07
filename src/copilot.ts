@@ -64,6 +64,32 @@ export async function summarizePriority(emails: any[], token: vscode.Cancellatio
   } catch { return [] }
 }
 
+/**
+ * Analiza las asignaciones leyendo el historial del hilo y devuelve, por id,
+ * un estado corto y un resumen descriptivo corto. Una sola llamada.
+ */
+export async function summarizeAssignments(items: any[], token: vscode.CancellationToken): Promise<any[]> {
+  if (!items.length) { return [] }
+  const model = await pickModel()
+  const compact = items.map(i => ({
+    id: i.id, proyecto: i.proyecto || '', solicitante: i.solicitante || '', asignadoA: i.member || '',
+    estatusManual: i.status || '', historial: (i.digest || '').replace(/\s+/g, ' ').slice(0, 1800),
+  }))
+  const prompt =
+    'Eres mi asistente de gestion. Te doy asignaciones de solicitudes con su HISTORIAL de correos (bandeja + enviados). ' +
+    'Con base en el historial, infiere el estado REAL de cada una. Devuelve SOLO un arreglo JSON valido, un objeto por asignacion, con:\n' +
+    '- "id": el id tal cual.\n' +
+    '- "estado": una de: "Atendido", "En seguimiento", "Pendiente", "Cerrado" (segun el historial: si ya se entrego/respondio lo pedido = Atendido/Cerrado; si hay ida y vuelta sin cerrar = En seguimiento; si nadie ha respondido = Pendiente).\n' +
+    '- "resumen": 1 frase CORTA y clara de que es y en que va.\n' +
+    'Varias asignaciones pueden ser del mismo tema; considera el hilo completo. No inventes. Responde unicamente el JSON.\n\n' +
+    '```json\n' + JSON.stringify(compact) + '\n```'
+  const resp = await model.sendRequest([vscode.LanguageModelChatMessage.User(prompt)], {}, token)
+  let text = ''
+  for await (const chunk of resp.text) { text += chunk }
+  text = text.trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim()
+  try { const a = JSON.parse(text); return Array.isArray(a) ? a : [] } catch { return [] }
+}
+
 /** Redacta un borrador de respuesta al correo dado, para que el usuario lo edite. */
 export async function draftReply(email: EmailBody, token: vscode.CancellationToken, instruction = ''): Promise<string> {
   const model = await pickModel()

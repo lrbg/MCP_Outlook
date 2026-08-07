@@ -2,12 +2,12 @@ import * as vscode from 'vscode'
 import { DayEntry, toMarkdown } from './bitacoraCore'
 import { loadEntries, runDailyReview } from './dailyReview'
 import { getPriorityEmails, getInboxClassified, isWindows } from './priorityInbox'
-import { getRequests } from './dataRequests'
+import { getRequests, getThreadDigests } from './dataRequests'
 import { loadAssignments, assign as assignReq, setStatus as setReqStatus, unassign as unassignReq } from './dataAssign'
 import { classifyPriority, labelText } from './priorityClassify'
 import { loadStatus, setStatus, clearStatus } from './priorityState'
 import { readEmailBody, sendReply, sendMail, getMe } from './outlookActions'
-import { draftReply, assistAgenda, summarizePriority } from './copilot'
+import { draftReply, assistAgenda, summarizePriority, summarizeAssignments } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
 import { recipesDir } from './mcpProvider'
@@ -89,6 +89,28 @@ async function removeTeamMember(context: vscode.ExtensionContext, k: string, ema
   const c = vscode.workspace.getConfiguration('m365')
   await c.update(K.teamCfg, c.get<string[]>(K.teamCfg, []).filter(x => x !== email), vscode.ConfigurationTarget.Global)
   if (panel) { panel.webview.postMessage({ type: K.teamMsg, team: c.get<string[]>(K.teamCfg, []) }) }
+}
+
+/** Analiza (con Copilot, leyendo el hilo) las asignaciones de un tablero. */
+async function runAnalyze(context: vscode.ExtensionContext, k: string): Promise<void> {
+  if (!panel) { return }
+  const K = KIND[k]
+  try {
+    const reqs = getRequests(K.keyword, 60, 200)
+    const map = await loadAssignments(context, K.file)
+    const assigned = reqs.filter(r => map[r.id]).map(r => ({
+      id: r.id, proyecto: r.proyecto, solicitante: r.solicitante, member: map[r.id].member, status: map[r.id].status,
+    }))
+    if (!assigned.length) { panel.webview.postMessage({ type: 'analysis', kind: k, results: [] }); return }
+    const digests = getThreadDigests(assigned.map(a => a.id), 60)
+    const dmap: Record<string, string> = {}
+    digests.forEach(d => { dmap[d.id] = d.digest })
+    const items = assigned.map(a => ({ ...a, digest: dmap[a.id] || '' }))
+    const results = await summarizeAssignments(items, new vscode.CancellationTokenSource().token)
+    panel.webview.postMessage({ type: 'analysis', kind: k, results })
+  } catch (e: any) {
+    panel.webview.postMessage({ type: 'analysis', kind: k, results: [], error: e?.message || String(e) })
+  }
 }
 
 /** Convierte el rango elegido (today/week/2weeks, por calendario) a dias hacia atras. */
@@ -187,6 +209,8 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
     case 'addPerfMember': { await addTeamMember(context, 'perf', m.email); return }
     case 'removeMember': { await removeTeamMember(context, 'data', m.email); return }
     case 'removePerfMember': { await removeTeamMember(context, 'perf', m.email); return }
+    case 'analyzeRequests': { await runAnalyze(context, 'data'); return }
+    case 'analyzePerf': { await runAnalyze(context, 'perf'); return }
     case 'loadPriority': {
       if (!panel) { return }
       try {
@@ -449,7 +473,11 @@ function render(s: State): string {
   .wrow:last-child { border-bottom: none; }
   .loadbar { height: 8px; background: var(--vscode-panel-border); border-radius: 4px; overflow: hidden; margin: 5px 0; }
   .loadbar span { display: block; height: 100%; background: var(--vscode-button-background); }
-  .wreq { font-size: 11px; padding: 1px 0 1px 6px; }
+  .wreq { font-size: 11px; padding: 2px 0 2px 6px; }
+  .est { font-size: 10px; padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; }
+  .est-atendido, .est-cerrado { color: #3fb950; }
+  .est-enseguimiento { color: #d9a017; }
+  .est-pendiente { color: #e5534b; }
   .actions select { max-width: 200px; }
   details.day { border-top: 1px solid var(--vscode-panel-border); padding: 8px 0; }
   details.day summary { cursor: pointer; font-weight: 600; }
@@ -728,8 +756,8 @@ function render(s: State): string {
     function mergeSummaries(arr){ const by={}; (arr||[]).forEach(s=>{by[s.id]=s;}); lists.prio.data.forEach(x=>{ const s=by[x.id]; if(s){ x.resumen=s.resumen||''; x.meeting=s.reunion||{es:false}; x.respuesta=s.respuesta||''; } else { x.resumen=x.resumen||''; } }); renderList('prio'); }
 
     const BRD = {
-      data: { team: ${JSON.stringify(s.team)}, reqs: [], page: 0, ids:{req:'requests',wl:'workload',chips:'teamchips',cnt:'reqcount',input:'newMember'}, msg:{load:'loadRequests',assign:'assignRequest',status:'setRequestStatus',unassign:'unassignRequest',add:'addMember',remove:'removeMember'} },
-      perf: { team: ${JSON.stringify(s.perfTeam)}, reqs: [], page: 0, ids:{req:'perfRequests',wl:'perfWorkload',chips:'perfTeamchips',cnt:'perfcount',input:'newPerfMember'}, msg:{load:'loadPerfRequests',assign:'assignPerf',status:'setPerfStatus',unassign:'unassignPerf',add:'addPerfMember',remove:'removePerfMember'} },
+      data: { team: ${JSON.stringify(s.team)}, reqs: [], page: 0, analysis: {}, ids:{req:'requests',wl:'workload',chips:'teamchips',cnt:'reqcount',input:'newMember'}, msg:{load:'loadRequests',assign:'assignRequest',status:'setRequestStatus',unassign:'unassignRequest',add:'addMember',remove:'removeMember',analyze:'analyzeRequests'} },
+      perf: { team: ${JSON.stringify(s.perfTeam)}, reqs: [], page: 0, analysis: {}, ids:{req:'perfRequests',wl:'perfWorkload',chips:'perfTeamchips',cnt:'perfcount',input:'newPerfMember'}, msg:{load:'loadPerfRequests',assign:'assignPerf',status:'setPerfStatus',unassign:'unassignPerf',add:'addPerfMember',remove:'removePerfMember',analyze:'analyzePerf'} },
     };
     function memberName(m){ return String(m||'').split('@')[0]; }
     function daysSince(ts){ if(!ts)return ''; const n=Math.floor((Date.now()-ts)/86400000); return n<=0?'hoy':(n===1?'1 día':(n+' días')); }
@@ -764,14 +792,20 @@ function render(s: State): string {
         : ''; }
       renderWLK(k);
     }
+    function analyzeK(k){ const B=BRD[k]; const el=document.getElementById(B.ids.wl); el.insertAdjacentHTML('afterbegin','<p class="muted" id="'+k+'-analyzing">Analizando el historial con Copilot…</p>'); post(B.msg.analyze); }
     function renderWLK(k){
       const B=BRD[k]; const box=document.getElementById(B.ids.wl);
-      if(!B.team.length){ box.innerHTML='<p class="muted">Agrega miembros del equipo para ver la carga.</p>'; return; }
+      const btn='<div style="margin-bottom:8px"><button class="sec" onclick="analyzeK(\\''+k+'\\')">Analizar asignaciones con IA</button></div>';
+      if(!B.team.length){ box.innerHTML=btn+'<p class="muted">Agrega miembros del equipo para ver la carga.</p>'; return; }
       const c={}; B.team.forEach(m=>c[m]={t:0,f:0,s:0,reqs:[]});
       B.reqs.forEach(r=>{ const a=r.assignment; if(a&&c[a.member]){ c[a.member].t++; if(a.status==='finalizada')c[a.member].f++; else c[a.member].s++; c[a.member].reqs.push(r);} });
       const max=Math.max(1, ...B.team.map(m=>c[m].t));
-      box.innerHTML=B.team.map(m=>{ const x=c[m];
-        const reqs=x.reqs.map(r=>'<div class="wreq muted">• '+esc(r.proyecto||r.solicitante||'solicitud')+' · hace '+daysSince(r.assignment.assignedAt)+' · '+(r.assignment.status==='finalizada'?'finalizada':'seguimiento')+'</div>').join('');
+      box.innerHTML=btn+B.team.map(m=>{ const x=c[m];
+        const reqs=x.reqs.map(r=>{ const an=(B.analysis||{})[r.id];
+          const base='• '+esc(r.proyecto||r.solicitante||'solicitud')+' · hace '+daysSince(r.assignment.assignedAt);
+          if(an){ const cls='est-'+String(an.estado||'').toLowerCase().normalize('NFD').replace(/[^a-z]/g,''); return '<div class="wreq"><span class="est '+cls+'">'+esc(an.estado||'')+'</span> <span>'+esc(an.resumen||'')+'</span> <span class="muted">('+base+')</span></div>'; }
+          return '<div class="wreq muted">'+base+' · '+(r.assignment.status==='finalizada'?'finalizada':'seguimiento')+'</div>';
+        }).join('');
         return '<div class="wrow"><div class="top"><span class="from">'+esc(memberName(m))+'</span><span class="muted">'+x.t+' ('+x.s+' seg · '+x.f+' fin)</span></div>'+
           '<div class="loadbar"><span style="width:'+Math.round(x.t/max*100)+'%"></span></div>'+reqs+'</div>';
       }).join('');
@@ -797,6 +831,7 @@ function render(s: State): string {
       else if (m.type === 'team') { BRD.data.team=m.team||[]; chipsK('data'); renderReqsK('data'); }
       else if (m.type === 'perfRequests') { if(m.error){ document.getElementById('perfRequests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { BRD.perf.reqs=m.items||[]; BRD.perf.page=0; if(m.team)BRD.perf.team=m.team; chipsK('perf'); renderReqsK('perf'); } }
       else if (m.type === 'perfTeam') { BRD.perf.team=m.team||[]; chipsK('perf'); renderReqsK('perf'); }
+      else if (m.type === 'analysis') { const B=BRD[m.kind]; if(B){ B.analysis={}; (m.results||[]).forEach(x=>{B.analysis[x.id]=x;}); renderWLK(m.kind); if(m.error){ const el=document.getElementById(B.ids.wl); if(el) el.insertAdjacentHTML('afterbegin','<p class="muted">No se pudo analizar: '+esc(m.error)+'</p>'); } } }
       else if (m.type === 'replySent') { closeModal(); }
       else if (m.type === 'agenda') { renderAgenda(m); }
       else if (m.type === 'agendaNotes') {
