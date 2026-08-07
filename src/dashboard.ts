@@ -571,6 +571,7 @@ function render(s: State): string {
     <div class="card">
       <h2>Bandeja de solicitudes <span class="muted" id="reqcount"></span></h2>
       <div id="requests"><p class="muted">Cargando…</p></div>
+      <div id="requests-pager" class="pager"></div>
     </div>
     <div class="card">
       <h2>Equipo operador <span class="muted" style="font-weight:400">· carga por persona</span></h2>
@@ -595,6 +596,7 @@ function render(s: State): string {
     <div class="card">
       <h2>Bandeja de solicitudes <span class="muted" id="perfcount"></span></h2>
       <div id="perfRequests"><p class="muted">Cargando…</p></div>
+      <div id="perfRequests-pager" class="pager"></div>
     </div>
     <div class="card">
       <h2>Equipo operador <span class="muted" style="font-weight:400">· carga por persona</span></h2>
@@ -726,8 +728,8 @@ function render(s: State): string {
     function mergeSummaries(arr){ const by={}; (arr||[]).forEach(s=>{by[s.id]=s;}); lists.prio.data.forEach(x=>{ const s=by[x.id]; if(s){ x.resumen=s.resumen||''; x.meeting=s.reunion||{es:false}; x.respuesta=s.respuesta||''; } else { x.resumen=x.resumen||''; } }); renderList('prio'); }
 
     const BRD = {
-      data: { team: ${JSON.stringify(s.team)}, reqs: [], ids:{req:'requests',wl:'workload',chips:'teamchips',cnt:'reqcount',input:'newMember'}, msg:{load:'loadRequests',assign:'assignRequest',status:'setRequestStatus',unassign:'unassignRequest',add:'addMember',remove:'removeMember'} },
-      perf: { team: ${JSON.stringify(s.perfTeam)}, reqs: [], ids:{req:'perfRequests',wl:'perfWorkload',chips:'perfTeamchips',cnt:'perfcount',input:'newPerfMember'}, msg:{load:'loadPerfRequests',assign:'assignPerf',status:'setPerfStatus',unassign:'unassignPerf',add:'addPerfMember',remove:'removePerfMember'} },
+      data: { team: ${JSON.stringify(s.team)}, reqs: [], page: 0, ids:{req:'requests',wl:'workload',chips:'teamchips',cnt:'reqcount',input:'newMember'}, msg:{load:'loadRequests',assign:'assignRequest',status:'setRequestStatus',unassign:'unassignRequest',add:'addMember',remove:'removeMember'} },
+      perf: { team: ${JSON.stringify(s.perfTeam)}, reqs: [], page: 0, ids:{req:'perfRequests',wl:'perfWorkload',chips:'perfTeamchips',cnt:'perfcount',input:'newPerfMember'}, msg:{load:'loadPerfRequests',assign:'assignPerf',status:'setPerfStatus',unassign:'unassignPerf',add:'addPerfMember',remove:'removePerfMember'} },
     };
     function memberName(m){ return String(m||'').split('@')[0]; }
     function daysSince(ts){ if(!ts)return ''; const n=Math.floor((Date.now()-ts)/86400000); return n<=0?'hoy':(n===1?'1 día':(n+' días')); }
@@ -736,11 +738,15 @@ function render(s: State): string {
     function rmMemberK(k,m){ post(BRD[k].msg.remove,{email:m}); }
     function loadReqsK(k){ document.getElementById(BRD[k].ids.req).innerHTML='<p class="muted">Cargando…</p>'; post(BRD[k].msg.load); }
     function reqSelectK(k,r){ const B=BRD[k]; const a=r.assignment; return '<select onchange="assignK(\\''+k+'\\',\\''+esc(r.id)+'\\',this.value)"><option value="">Asignar a…</option>'+B.team.map(m=>'<option value="'+esc(m)+'"'+(a&&a.member===m?' selected':'')+'>'+esc(memberName(m))+'</option>').join('')+'</select>'; }
+    function pageReqK(k,d){ BRD[k].page=(BRD[k].page||0)+d; renderReqsK(k); }
     function renderReqsK(k){
       const B=BRD[k]; const box=document.getElementById(B.ids.req);
       const rc=document.getElementById(B.ids.cnt); if(rc)rc.textContent=B.reqs.length?('· '+B.reqs.length):'';
-      if(!B.reqs.length){ box.innerHTML='<p class="muted">Sin solicitudes en el rango.</p>'; renderWLK(k); return; }
-      box.innerHTML=B.reqs.map(r=>{
+      const pagerEl=document.getElementById(B.ids.req+'-pager');
+      if(!B.reqs.length){ box.innerHTML='<p class="muted">Sin solicitudes en el rango.</p>'; if(pagerEl)pagerEl.innerHTML=''; renderWLK(k); return; }
+      const pages=Math.max(1,Math.ceil(B.reqs.length/PAGE));
+      if(B.page==null)B.page=0; if(B.page>=pages)B.page=pages-1; if(B.page<0)B.page=0;
+      box.innerHTML=B.reqs.slice(B.page*PAGE,(B.page+1)*PAGE).map(r=>{
         const a=r.assignment; let row;
         if(a){ row='<div class="rec">Asignada a <strong>'+esc(memberName(a.member))+'</strong> · hace '+daysSince(a.assignedAt)+' · '+(a.status==='finalizada'?'<span class="rep">Finalizada</span>':'<span class="pend">En seguimiento</span>')+'</div>'+
           '<div class="actions">'+reqSelectK(k,r)+
@@ -753,6 +759,9 @@ function render(s: State): string {
           '<div class="muted rec">Equipo: '+esc(r.equipo||'—')+' · Fecha solicitada: '+esc(r.fecha||'—')+'</div>'+
           row+'</div>';
       }).join('');
+      if(pagerEl){ pagerEl.innerHTML = pages>1
+        ? ('<button class="sec" onclick="pageReqK(\\''+k+'\\',-1)"'+(B.page===0?' disabled':'')+'>‹ Anterior</button><span class="muted">'+(B.page+1)+' / '+pages+' · '+B.reqs.length+'</span><button class="sec" onclick="pageReqK(\\''+k+'\\',1)"'+(B.page>=pages-1?' disabled':'')+'>Siguiente ›</button>')
+        : ''; }
       renderWLK(k);
     }
     function renderWLK(k){
@@ -784,9 +793,9 @@ function render(s: State): string {
       else if (m.type === 'emailBody') { renderEmail(m); }
       else if (m.type === 'inbox') { renderInbox(m); }
       else if (m.type === 'inboxSummaries') { mergeSummaries(m.summaries); }
-      else if (m.type === 'requests') { if(m.error){ document.getElementById('requests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { BRD.data.reqs=m.items||[]; if(m.team)BRD.data.team=m.team; chipsK('data'); renderReqsK('data'); } }
+      else if (m.type === 'requests') { if(m.error){ document.getElementById('requests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { BRD.data.reqs=m.items||[]; BRD.data.page=0; if(m.team)BRD.data.team=m.team; chipsK('data'); renderReqsK('data'); } }
       else if (m.type === 'team') { BRD.data.team=m.team||[]; chipsK('data'); renderReqsK('data'); }
-      else if (m.type === 'perfRequests') { if(m.error){ document.getElementById('perfRequests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { BRD.perf.reqs=m.items||[]; if(m.team)BRD.perf.team=m.team; chipsK('perf'); renderReqsK('perf'); } }
+      else if (m.type === 'perfRequests') { if(m.error){ document.getElementById('perfRequests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { BRD.perf.reqs=m.items||[]; BRD.perf.page=0; if(m.team)BRD.perf.team=m.team; chipsK('perf'); renderReqsK('perf'); } }
       else if (m.type === 'perfTeam') { BRD.perf.team=m.team||[]; chipsK('perf'); renderReqsK('perf'); }
       else if (m.type === 'replySent') { closeModal(); }
       else if (m.type === 'agenda') { renderAgenda(m); }
