@@ -10,7 +10,7 @@ import { readEmailBody, sendReply, sendMail, getMe } from './outlookActions'
 import { draftReply, assistAgenda, summarizePriority, summarizeAssignments, summarizeCommits } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
-import { getGithubToken, getTeamCommits, listAllRepos } from './github'
+import { getGithubToken, getTeamCommits, listAllRepos, getReposStats } from './github'
 import { log, showLog } from './log'
 import { recipesDir } from './mcpProvider'
 
@@ -249,8 +249,12 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
 
         prog('Cargando repos de la organización…')
         const allRepos = await listAllRepos(token, org)
+        const active = allRepos.filter(r => !r.pushed || r.pushed >= sinceISO)
+        prog(`${active.length} repos activos · contando commits y PRs…`)
+        const stats = await getReposStats(token, active, sinceISO, untilISO, prog)
+        const reposOut = allRepos.map(r => ({ full: r.full, pushed: r.pushed, commits: stats[r.full]?.commits || 0, prs: stats[r.full] ? stats[r.full].prs : null }))
         if (!authors.length) {
-          panel.webview.postMessage({ type: 'github', org, allRepos: allRepos.map(x => ({ full: x.full, pushed: x.pushed })), members: [], repoCount: 0, month })
+          panel.webview.postMessage({ type: 'github', org, allRepos: reposOut, members: [], repoCount: 0, month })
           return
         }
         const r = await vscode.window.withProgress(
@@ -259,7 +263,7 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
         )
         panel.webview.postMessage({
           type: 'github', org, month,
-          allRepos: allRepos.map(x => ({ full: x.full, pushed: x.pushed })),
+          allRepos: reposOut,
           members: r.members, repoCount: r.repoCount,
         })
         try {
@@ -872,7 +876,7 @@ function render(s: State): string {
       if(!gh.repos.length){ box.innerHTML='<p class="muted">Sin repos (revisa la org y Actualizar).</p>'; document.getElementById('ghrepos-pager').innerHTML=''; return; }
       const arr=gh.repos.filter(r=>!gh.repoFilter || String(r.full).toLowerCase().includes(gh.repoFilter));
       const pages=Math.max(1,Math.ceil(arr.length/GHPAGE)); if(gh.repoPage>=pages)gh.repoPage=pages-1; if(gh.repoPage<0)gh.repoPage=0;
-      box.innerHTML = arr.slice(gh.repoPage*GHPAGE,(gh.repoPage+1)*GHPAGE).map(r=>'<div class="mailrow"><div class="top"><span class="from">'+esc(r.full)+'</span><span class="muted">'+esc(r.pushed||'')+'</span></div></div>').join('') || '<p class="muted">Sin coincidencias.</p>';
+      box.innerHTML = arr.slice(gh.repoPage*GHPAGE,(gh.repoPage+1)*GHPAGE).map(r=>'<div class="mailrow"><div class="top"><span class="from">'+esc(r.full)+'</span><span class="muted">commits: '+(r.commits||0)+' · PR: '+(r.prs==null?'—':r.prs)+'</span></div><div class="muted rec">último push: '+esc(r.pushed||'—')+'</div></div>').join('') || '<p class="muted">Sin coincidencias.</p>';
       ghPager('ghrepos-pager', gh.repoPage, pages, arr.length, 'repo');
     }
     function renderOps(){

@@ -12,6 +12,7 @@ export interface Commit { repo: string; message: string; date: string; sha: stri
 export interface MemberResult { author: string; commits: Commit[]; error?: string }
 export interface TeamResult { repoCount: number; members: MemberResult[] }
 export interface RepoInfo { owner: string; name: string; full: string; pushed: string }
+export interface RepoStat { commits: number; prs: number | null }
 
 const REQ_TIMEOUT_MS = 20000
 const MAX_REPOS = 150
@@ -39,6 +40,64 @@ async function gh(url: string, token: string): Promise<{ status: number; json: a
     if (e?.name === 'AbortError') { throw new Error('GitHub no respondio a tiempo (timeout).') }
     throw e
   } finally { clearTimeout(timer) }
+}
+
+/** Igual que gh() pero tambien devuelve la cabecera Link (para contar por paginacion). */
+async function ghFull(url: string, token: string): Promise<{ status: number; json: any; link: string }> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), REQ_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'm365-mcp-plugin' }, signal: ctrl.signal })
+    let json: any = null
+    try { json = await res.json() } catch { /* vacio */ }
+    return { status: res.status, json, link: res.headers.get('link') || '' }
+  } catch (e: any) {
+    if (e?.name === 'AbortError') { throw new Error('GitHub no respondio a tiempo (timeout).') }
+    throw e
+  } finally { clearTimeout(timer) }
+}
+
+function lastPage(link: string): number | null {
+  const m = link.match(/[?&]page=(\d+)[^>]*>;\s*rel="last"/)
+  return m ? Number(m[1]) : null
+}
+
+/** Numero de commits del repo en el rango (todos los autores). Truco per_page=1 + Link. */
+async function repoCommitCount(token: string, owner: string, name: string, sinceISO: string, untilISO: string): Promise<number> {
+  const url = `https://api.github.com/repos/${owner}/${name}/commits?since=${sinceISO}T00:00:00Z&until=${untilISO}T23:59:59Z&per_page=1`
+  const { status, json, link } = await ghFull(url, token)
+  if (status === 409 || status === 404) { return 0 }
+  const lp = lastPage(link)
+  if (lp) { return lp }
+  return Array.isArray(json) ? json.length : 0
+}
+
+let prSearchBlocked = false
+/** Numero de PRs creados en el rango. null si la busqueda no esta disponible. */
+async function repoPrCount(token: string, owner: string, name: string, sinceISO: string, untilISO: string): Promise<number | null> {
+  if (prSearchBlocked) { return null }
+  const q = `repo:${owner}/${name} type:pr created:${sinceISO}..${untilISO}`
+  const { status, json } = await ghFull(`https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=1`, token)
+  if (status === 403) { prSearchBlocked = true; return null }
+  if (status !== 200) { return null }
+  return typeof json?.total_count === 'number' ? json.total_count : null
+}
+
+/** Commits y PRs por repo (para los repos activos del mes). Devuelve mapa full->stat. */
+export async function getReposStats(token: string, repos: RepoInfo[], sinceISO: string, untilISO: string, onProgress?: (m: string) => void): Promise<Record<string, RepoStat>> {
+  prSearchBlocked = false
+  const map: Record<string, RepoStat> = {}
+  let done = 0
+  await pool(repos, 3, async (r) => {
+    let commits = 0; let prs: number | null = null
+    try { commits = await repoCommitCount(token, r.owner, r.name, sinceISO, untilISO) } catch (e: any) { log(`stats ${r.name} commits: ${e?.message || e}`) }
+    try { prs = await repoPrCount(token, r.owner, r.name, sinceISO, untilISO) } catch (e: any) { log(`stats ${r.name} prs: ${e?.message || e}`) }
+    map[r.full] = { commits, prs }
+    done++
+    if (done % 10 === 0) { onProgress?.(`stats: ${done}/${repos.length} repos`) }
+  })
+  log(`stats: listo (${repos.length} repos)`)
+  return map
 }
 
 /** Repos de la org con push desde `sinceISO`, ordenados por push desc. */
