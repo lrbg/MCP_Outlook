@@ -10,6 +10,7 @@ import { readEmailBody, sendReply, sendMail, getMe } from './outlookActions'
 import { draftReply, assistAgenda, summarizePriority, summarizeAssignments } from './copilot'
 import { getMeetings } from './calendarRead'
 import { groupByDay, findConflicts, freeSlotsByDay } from './agendaCore'
+import { getGithubToken, searchCommits } from './github'
 import { recipesDir } from './mcpProvider'
 
 let panel: vscode.WebviewPanel | undefined
@@ -142,6 +143,8 @@ interface State {
   senders: string[]
   team: string[]
   perfTeam: string[]
+  githubOrg: string
+  githubTeam: string[]
   recipes: string[]
   windows: boolean
 }
@@ -159,6 +162,8 @@ async function gather(context: vscode.ExtensionContext): Promise<State> {
     senders: c.get<string[]>('prioritySenders', []),
     team: c.get<string[]>('dataTeam', []),
     perfTeam: c.get<string[]>('perfTeam', []),
+    githubOrg: c.get<string>('githubOrg', ''),
+    githubTeam: c.get<string[]>('githubTeam', []),
     recipes: await listRecipes(context),
     windows: isWindows,
   }
@@ -211,6 +216,39 @@ async function handle(context: vscode.ExtensionContext, m: any): Promise<void> {
     case 'removePerfMember': { await removeTeamMember(context, 'perf', m.email); return }
     case 'analyzeRequests': { await runAnalyze(context, 'data'); return }
     case 'analyzePerf': { await runAnalyze(context, 'perf'); return }
+    case 'setGithubOrg': { await c.update('githubOrg', String(m.org || '').trim(), G); return }
+    case 'addGhMember': {
+      const e = String(m.email || '').trim()
+      if (e) { const cur = c.get<string[]>('githubTeam', []); if (!cur.includes(e)) { await c.update('githubTeam', [...cur, e], G) } }
+      if (panel) { panel.webview.postMessage({ type: 'ghTeam', team: c.get<string[]>('githubTeam', []) }) }
+      return
+    }
+    case 'removeGhMember': {
+      await c.update('githubTeam', c.get<string[]>('githubTeam', []).filter(x => x !== m.email), G)
+      if (panel) { panel.webview.postMessage({ type: 'ghTeam', team: c.get<string[]>('githubTeam', []) }) }
+      return
+    }
+    case 'githubSignIn': { await getGithubToken(true); if (panel) { panel.webview.postMessage({ type: 'ghAuthed' }) } return }
+    case 'loadGithub': {
+      if (!panel) { return }
+      try {
+        const org = (c.get<string>('githubOrg', '') || '').trim()
+        const authors = c.get<string[]>('githubTeam', [])
+        if (!org) { panel.webview.postMessage({ type: 'github', error: 'Escribe tu organización de GitHub arriba.' }); return }
+        const token = await getGithubToken(false)
+        if (!token) { panel.webview.postMessage({ type: 'github', needAuth: true, error: 'Conecta tu cuenta de GitHub.' }); return }
+        const since = new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10)
+        const members: any[] = []
+        for (const a of authors) {
+          try { members.push({ author: a, commits: await searchCommits(token, org, a, since) }) }
+          catch (e: any) { members.push({ author: a, commits: [], error: e?.message || String(e) }) }
+        }
+        panel.webview.postMessage({ type: 'github', org, members })
+      } catch (e: any) {
+        panel.webview.postMessage({ type: 'github', error: e?.message || String(e) })
+      }
+      return
+    }
     case 'loadPriority': {
       if (!panel) { return }
       try {
@@ -632,6 +670,29 @@ function render(s: State): string {
     </div>
   </div>
 
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2>Commits del equipo (GitHub)</h2>
+      <div class="seg" id="ghseg">
+        <button data-r="1" onclick="setGhRange(1)">Día</button>
+        <button data-r="7" onclick="setGhRange(7)">Semana</button>
+        <button data-r="30" class="active" onclick="setGhRange(30)">Mes</button>
+      </div>
+      <span style="flex:1"></span>
+      <button class="sec" onclick="post('githubSignIn')">Conectar GitHub</button>
+      <button class="sec" onclick="loadGithub()">Actualizar</button>
+    </div>
+    <div class="senderbox" style="margin-top:10px">
+      <input type="text" id="ghOrg" placeholder="organización de GitHub (ej. mi-empresa)" value="${esc(s.githubOrg)}" onchange="post('setGithubOrg',{org:this.value})">
+    </div>
+    <div class="senderbox" style="margin-top:8px">
+      <input type="text" id="newGh" placeholder="correo o usuario de GitHub del operador" onkeydown="if(event.key==='Enter')addGh()">
+      <button class="sec" onclick="addGh()">Agregar operador</button>
+    </div>
+    <div class="chips" id="ghchips" style="margin-top:8px"></div>
+    <div id="github" style="margin-top:12px"><p class="muted">Configura organización y operadores, luego Actualizar.</p></div>
+  </div>
+
   <div id="modalHost"></div>
 
   <script>
@@ -755,6 +816,31 @@ function render(s: State): string {
     }
     function mergeSummaries(arr){ const by={}; (arr||[]).forEach(s=>{by[s.id]=s;}); lists.prio.data.forEach(x=>{ const s=by[x.id]; if(s){ x.resumen=s.resumen||''; x.meeting=s.reunion||{es:false}; x.respuesta=s.respuesta||''; } else { x.resumen=x.resumen||''; } }); renderList('prio'); }
 
+    let ghRange = 30;
+    const ghData = { org: '', members: [], team: ${JSON.stringify(s.githubTeam)}, err: '' };
+    function setGhRange(r){ ghRange=r; document.querySelectorAll('#ghseg button').forEach(b=>b.classList.toggle('active',(+b.dataset.r)===r)); renderGithub(); }
+    function addGh(){ const el=document.getElementById('newGh'); const v=(el.value||'').trim(); if(v){ post('addGhMember',{email:v}); el.value=''; } }
+    function rmGh(m){ post('removeGhMember',{email:m}); }
+    function ghChips(){ document.getElementById('ghchips').innerHTML = ghData.team.length? ghData.team.map(m=>'<span class="chip">'+esc(m)+'<button class="x" onclick="rmGh(\\''+esc(m)+'\\')">&times;</button></span>').join('') : '<span class="muted">Sin operadores. Agrega correos o usuarios de GitHub arriba.</span>'; }
+    function loadGithub(){ document.getElementById('github').innerHTML='<p class="muted">Consultando GitHub…</p>'; post('loadGithub'); }
+    function ghInRange(dateStr){ const d=Date.parse(dateStr); if(!d)return false; return (Date.now()-d) <= ghRange*86400000; }
+    function renderGithub(){
+      const box=document.getElementById('github');
+      if(ghData.err){ box.innerHTML='<p class="muted">'+esc(ghData.err)+'</p>'; return; }
+      if(!ghData.members.length){ box.innerHTML='<p class="muted">Agrega operadores y presiona Actualizar.</p>'; return; }
+      const label = ghRange===1?'hoy':(ghRange===7?'esta semana':'este mes');
+      const max=Math.max(1, ...ghData.members.map(mm=>(mm.commits||[]).filter(c=>ghInRange(c.date)).length));
+      box.innerHTML=ghData.members.map(mm=>{
+        if(mm.error){ return '<div class="wrow"><div class="top"><span class="from">'+esc(mm.author)+'</span><span class="muted">error</span></div><div class="muted wreq">'+esc(mm.error)+'</div></div>'; }
+        const cs=(mm.commits||[]).filter(c=>ghInRange(c.date));
+        const byRepo={}; cs.forEach(c=>{ (byRepo[c.repo]=byRepo[c.repo]||[]).push(c); });
+        const repos=Object.keys(byRepo).sort();
+        const detail=repos.map(rp=>'<div class="wreq"><strong>'+esc(rp||'(repo)')+'</strong> ('+byRepo[rp].length+')'+byRepo[rp].slice(0,8).map(c=>'<div class="muted" style="padding-left:10px">• '+esc(String(c.date).slice(0,10))+' — '+esc(c.message)+'</div>').join('')+'</div>').join('');
+        return '<div class="wrow"><div class="top"><span class="from">'+esc(mm.author)+'</span><span class="muted">'+cs.length+' commits '+label+'</span></div>'+
+          '<div class="loadbar"><span style="width:'+Math.round(cs.length/max*100)+'%"></span></div>'+(cs.length?detail:'<div class="muted wreq">Sin commits '+label+'.</div>')+'</div>';
+      }).join('');
+    }
+
     const BRD = {
       data: { team: ${JSON.stringify(s.team)}, reqs: [], page: 0, analysis: {}, ids:{req:'requests',wl:'workload',chips:'teamchips',cnt:'reqcount',input:'newMember'}, msg:{load:'loadRequests',assign:'assignRequest',status:'setRequestStatus',unassign:'unassignRequest',add:'addMember',remove:'removeMember',analyze:'analyzeRequests'} },
       perf: { team: ${JSON.stringify(s.perfTeam)}, reqs: [], page: 0, analysis: {}, ids:{req:'perfRequests',wl:'perfWorkload',chips:'perfTeamchips',cnt:'perfcount',input:'newPerfMember'}, msg:{load:'loadPerfRequests',assign:'assignPerf',status:'setPerfStatus',unassign:'unassignPerf',add:'addPerfMember',remove:'removePerfMember',analyze:'analyzePerf'} },
@@ -832,6 +918,9 @@ function render(s: State): string {
       else if (m.type === 'perfRequests') { if(m.error){ document.getElementById('perfRequests').innerHTML='<p class="muted">No se pudieron leer las solicitudes: '+esc(m.error)+'</p>'; } else { BRD.perf.reqs=m.items||[]; BRD.perf.page=0; if(m.team)BRD.perf.team=m.team; chipsK('perf'); renderReqsK('perf'); } }
       else if (m.type === 'perfTeam') { BRD.perf.team=m.team||[]; chipsK('perf'); renderReqsK('perf'); }
       else if (m.type === 'analysis') { const B=BRD[m.kind]; if(B){ B.analysis={}; (m.results||[]).forEach(x=>{B.analysis[x.id]=x;}); renderWLK(m.kind); if(m.error){ const el=document.getElementById(B.ids.wl); if(el) el.insertAdjacentHTML('afterbegin','<p class="muted">No se pudo analizar: '+esc(m.error)+'</p>'); } } }
+      else if (m.type === 'github') { ghData.members=m.members||[]; ghData.org=m.org||''; ghData.err=m.error||''; renderGithub(); }
+      else if (m.type === 'ghTeam') { ghData.team=m.team||[]; ghChips(); }
+      else if (m.type === 'ghAuthed') { loadGithub(); }
       else if (m.type === 'replySent') { closeModal(); }
       else if (m.type === 'agenda') { renderAgenda(m); }
       else if (m.type === 'agendaNotes') {
@@ -856,7 +945,7 @@ function render(s: State): string {
       }).join('');
       box.innerHTML=html;
     }
-    chipsK('data'); chipsK('perf');
+    chipsK('data'); chipsK('perf'); ghChips();
     loadInbox();
     loadReqsK('data'); loadReqsK('perf');
   </script>
