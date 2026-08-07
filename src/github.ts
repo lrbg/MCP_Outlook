@@ -214,12 +214,23 @@ async function searchCommitsByAuthor(token: string, org: string, login: string, 
   const { status, json, headers } = await gh(`https://api.github.com/search/commits?q=${encodeURIComponent(q)}&per_page=100&sort=author-date&order=desc`, token)
   if (status === 403) { throw new Error(msg403(headers, json)) }
   if (status !== 200 || !Array.isArray(json?.items)) { return [] }
-  return json.items.map((it: any) => ({
-    repo: it.repository?.full_name || it.repository?.name || '',
-    message: String(it.commit?.message || '').split('\n')[0].slice(0, 160),
-    date: it.commit?.author?.date || it.commit?.committer?.date || '',
-    sha: (it.sha || '').slice(0, 7), url: it.html_url || '',
-  }))
+  const want = login.toLowerCase()
+  // Doble verificacion en cliente: la Search API a veces devuelve de mas.
+  // Contamos solo commits de ESTE autor y dentro del rango de fechas.
+  const out: Commit[] = []
+  for (const it of json.items) {
+    const itemLogin = String(it.author?.login || '').toLowerCase()
+    if (itemLogin && itemLogin !== want) { continue }
+    const date = it.commit?.author?.date || it.commit?.committer?.date || ''
+    const day = String(date).slice(0, 10)
+    if (day && (day < sinceISO || day > untilISO)) { continue }
+    out.push({
+      repo: it.repository?.full_name || it.repository?.name || '',
+      message: String(it.commit?.message || '').split('\n')[0].slice(0, 160),
+      date, sha: (it.sha || '').slice(0, 7), url: it.html_url || '',
+    })
+  }
+  return out
 }
 
 let limited = false
@@ -247,9 +258,17 @@ export async function getGithubReport(
   const repoCounts: Record<string, number> = {}
   let done = 0
   let grand = 0
+  const validLogin = new RegExp('^[A-Za-z0-9-]+(_[A-Za-z0-9-]+)?$')
   for (const a of authors) {
     let cs: Commit[] = []
     let err = ''
+    if (!validLogin.test(a)) {
+      err = 'Usuario de GitHub inválido (sin puntos ni correo). Usa el login exacto, p. ej. el que sale en "Detectar autores".'
+      log(`autor ${a}: invalido (se omite)`)
+      members.push({ author: a, commits: [], error: err })
+      done++; onProgress?.(`${done}/${authors.length} operadores · ${grand} commits`)
+      continue
+    }
     try { cs = await searchCommitsByAuthor(token, org, a, sinceISO, untilISO) }
     catch (e: any) { err = e?.message || String(e); log(`autor ${a}: ${err}`) }
     cs.sort((x, y) => String(y.date).localeCompare(String(x.date)))
